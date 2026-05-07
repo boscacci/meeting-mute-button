@@ -63,8 +63,7 @@ local function toggleTeamsMute(muteState)
     return
   end
 
-  local previousApp = hs.application.frontmostApplication()
-  log("Sending Teams mute shortcut via System Events; target state=" .. tostring(muteState))
+  log("Activating Teams and sending mute shortcut via System Events; target state=" .. tostring(muteState))
 
   local script = string.format([[
 tell application "Microsoft Teams" to activate
@@ -74,14 +73,8 @@ tell application "System Events" to keystroke "m" using {command down, shift dow
 
   local ok, result = hs.osascript.applescript(script)
   log("System Events mute shortcut ok=" .. tostring(ok) .. " result=" .. tostring(result))
+  log("Teams left focused after mute shortcut")
   hs.alert.show(alertForMuteState(muteState))
-
-  if previousApp and previousApp:bundleID() ~= teams:bundleID() then
-    hs.timer.doAfter(0.3, function()
-      log("Restoring previous app: " .. tostring(previousApp:name()))
-      previousApp:activate()
-    end)
-  end
 end
 
 _G.toggleTeamsMuteFromArduinoButton = toggleTeamsMute
