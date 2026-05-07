@@ -4,6 +4,8 @@ local debugHeartbeats = false
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
 local teamsActivationDelaySeconds = 0.15
+local useAccessibilityMicButton = true
+local sendKeyboardShortcut = false
 local teamsBundleIds = {
   "com.microsoft.teams2",
   "com.microsoft.teams",
@@ -55,13 +57,114 @@ local function isTeamsFrontmost(teams)
   return frontmostApp and frontmostApp:bundleID() == teams:bundleID()
 end
 
+local function stringAttribute(element, attribute)
+  local ok, value = pcall(function()
+    return element:attributeValue(attribute)
+  end)
+  if ok and type(value) == "string" then
+    return value
+  end
+  return ""
+end
+
+local function elementText(element)
+  return table.concat({
+    stringAttribute(element, "AXRole"),
+    stringAttribute(element, "AXTitle"),
+    stringAttribute(element, "AXDescription"),
+    stringAttribute(element, "AXHelp"),
+    stringAttribute(element, "AXValue"),
+  }, " ")
+end
+
+local function canPress(element)
+  local ok, actions = pcall(function()
+    return element:actionNames()
+  end)
+  if not ok or type(actions) ~= "table" then
+    return false
+  end
+  for _, action in ipairs(actions) do
+    if action == "AXPress" then
+      return true
+    end
+  end
+  return false
+end
+
+local function findMicButton(element, depth, seen)
+  if not element or depth > 14 then
+    return nil
+  end
+
+  local elementId = tostring(element)
+  if seen[elementId] then
+    return nil
+  end
+  seen[elementId] = true
+
+  local role = stringAttribute(element, "AXRole")
+  local text = elementText(element):lower()
+  local isButtonLike = role == "AXButton" or role == "AXCheckBox" or role == "AXToggle"
+  local mentionsMic = text:match("mute") or text:match("unmute") or text:match("microphone") or text:match("%f[%a]mic%f[%A]")
+
+  if isButtonLike and canPress(element) and mentionsMic then
+    return element, text
+  end
+
+  local ok, children = pcall(function()
+    return element:attributeValue("AXChildren")
+  end)
+  if not ok or type(children) ~= "table" then
+    return nil
+  end
+
+  for _, child in ipairs(children) do
+    local found, foundText = findMicButton(child, depth + 1, seen)
+    if found then
+      return found, foundText
+    end
+  end
+
+  return nil
+end
+
+local function clickTeamsMicButton(teams)
+  local appElement = hs.axuielement.applicationElement(teams)
+  if not appElement then
+    log("Could not get Teams accessibility root")
+    return false
+  end
+
+  local button, text = findMicButton(appElement, 0, {})
+  if not button then
+    log("No Teams mic/mute accessibility button found")
+    return false
+  end
+
+  log("Pressing Teams mic/mute accessibility element: " .. text)
+  local ok, result = pcall(function()
+    return button:performAction("AXPress")
+  end)
+  log("Teams mic/mute accessibility press ok=" .. tostring(ok) .. " result=" .. tostring(result))
+  return ok
+end
+
 local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
   attempt = attempt or 1
 
   if isTeamsFrontmost(teams) then
-    log("Teams is frontmost; sending app-targeted mute shortcut; target state=" .. tostring(muteState))
-    hs.eventtap.keyStroke({ "cmd", "shift" }, "m", 100000, teams)
-    log("Teams left focused after mute shortcut")
+    if useAccessibilityMicButton and clickTeamsMicButton(teams) then
+      log("Teams left focused after accessibility mic button press")
+    elseif sendKeyboardShortcut then
+      log("Teams is frontmost; sending app-targeted mute shortcut; target state=" .. tostring(muteState))
+      hs.eventtap.keyStroke({ "cmd", "shift" }, "m", 100000, teams)
+      log("Teams left focused after mute shortcut")
+    else
+      log("Teams is frontmost; no safe mic action available")
+      hs.alert.show("Teams focused; mic button not found")
+      return
+    end
     hs.alert.show(alertForMuteState(muteState))
     return
   end
