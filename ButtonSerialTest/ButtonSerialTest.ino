@@ -8,10 +8,41 @@ const uint8_t LED_PIN = LED_BUILTIN;
 #endif
 const unsigned long DEBOUNCE_MS = 15;
 
+enum MuteState {
+  MUTED,
+  UNMUTED
+};
+
+struct MutePresentation {
+  MuteState state;
+  const char *name;
+  bool redLedOn;
+  bool greenLedOn;
+  bool onboardLedOn;
+};
+
+const MutePresentation PRESENTATIONS[] = {
+  {MUTED, "muted", true, false, false},
+  {UNMUTED, "unmuted", false, true, true},
+};
+
 int lastRawReading = HIGH;
 int stableReading = HIGH;
-bool muted = false;
+MuteState currentMuteState = UNMUTED;
 unsigned long lastRawChangeAt = 0;
+
+const MutePresentation *presentationFor(MuteState state) {
+  for (const MutePresentation &presentation : PRESENTATIONS) {
+    if (presentation.state == state) {
+      return &presentation;
+    }
+  }
+  return &PRESENTATIONS[1];
+}
+
+MuteState toggledState(MuteState state) {
+  return state == MUTED ? UNMUTED : MUTED;
+}
 
 void setExternalLeds(bool redOn, bool greenOn) {
   digitalWrite(RED_LED_PIN, redOn ? LOW : HIGH);
@@ -19,22 +50,25 @@ void setExternalLeds(bool redOn, bool greenOn) {
 }
 
 void applyMuteLeds() {
-  setExternalLeds(muted, !muted);
-  digitalWrite(LED_PIN, muted ? LOW : HIGH);
+  const MutePresentation *currentPresentation = presentationFor(currentMuteState);
+  setExternalLeds(currentPresentation->redLedOn, currentPresentation->greenLedOn);
+  digitalWrite(LED_PIN, currentPresentation->onboardLedOn ? HIGH : LOW);
 }
 
 void printState(const char *label, int reading) {
+  const MutePresentation *currentPresentation = presentationFor(currentMuteState);
+
   Serial.print(label);
   Serial.print(" raw=");
   Serial.print(reading == LOW ? "LOW" : "HIGH");
   Serial.print(" pressed=");
   Serial.print(reading == LOW ? "yes" : "no");
   Serial.print(" state=");
-  Serial.print(muted ? "muted" : "unmuted");
+  Serial.print(currentPresentation->name);
   Serial.print(" red=");
-  Serial.print(muted ? "on" : "off");
+  Serial.print(currentPresentation->redLedOn ? "on" : "off");
   Serial.print(" green=");
-  Serial.println(muted ? "off" : "on");
+  Serial.println(currentPresentation->greenLedOn ? "on" : "off");
 }
 
 void setup() {
@@ -76,7 +110,7 @@ void loop() {
   if ((now - lastRawChangeAt) >= DEBOUNCE_MS && rawReading != stableReading) {
     stableReading = rawReading;
     if (stableReading == LOW) {
-      muted = !muted;
+      currentMuteState = toggledState(currentMuteState);
       applyMuteLeds();
       printState("pressed-toggle", stableReading);
     } else {

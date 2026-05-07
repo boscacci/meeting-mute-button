@@ -31,7 +31,7 @@ arduino-cli monitor -p /dev/cu.usbserial-0001 --config baudrate=115200,dtr=off,r
 
 Repo config: `hammerspoon/init.lua`
 
-The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, and activates Microsoft Teams. Teams is intentionally left focused after each button press. Alerts use the ESP32 state: `Mic is muted` for red and `Mic is hot!` for green.
+The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, and activates Microsoft Teams. Teams is intentionally left focused after each button press. The ESP32 serial state is the source of truth for both LED color and Teams intent: `muted` means red/`Mic is muted`, and `unmuted` means green/`Mic is hot!`.
 
 Hammerspoon first tries to find and press a Teams mic/mute button through Accessibility. If Teams is focused but no call mic button is available, the alert still reports the ESP32/LED state, such as `Mic is muted (LED red). No call mic button found.` Keyboard shortcut emission is disabled in `hammerspoon/init.lua` with `sendKeyboardShortcut = false`, because `Command+Shift+M` can leak into Terminal and open man-page windows.
 

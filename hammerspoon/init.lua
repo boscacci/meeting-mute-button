@@ -15,6 +15,10 @@ local serialPort = nil
 local serialBuffer = ""
 local lastToggleAt = 0
 local serialReconnectGeneration = 0
+local muteStates = {
+  muted = { name = "muted", ledColor = "red", alert = "Mic is muted" },
+  unmuted = { name = "unmuted", ledColor = "green", alert = "Mic is hot!" },
+}
 
 local function log(message)
   local line = os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(message)
@@ -43,22 +47,17 @@ local function findTeams()
   return nil
 end
 
+local function stateFor(muteState)
+  return muteStates[muteState] or { name = tostring(muteState), ledColor = "unknown", alert = "Teams mute toggled" }
+end
+
 local function alertForMuteState(muteState)
-  if muteState == "muted" then
-    return "Mic is muted"
-  elseif muteState == "unmuted" then
-    return "Mic is hot!"
-  end
-  return "Teams mute toggled"
+  return stateFor(muteState).alert
 end
 
 local function alertForUnavailableTeamsMicControl(muteState)
-  if muteState == "muted" then
-    return "Mic is muted (LED red). No call mic button found."
-  elseif muteState == "unmuted" then
-    return "Mic is hot! (LED green). No call mic button found."
-  end
-  return "LED changed. No call mic button found."
+  local state = stateFor(muteState)
+  return state.alert .. " (LED " .. state.ledColor .. "). No call mic button found."
 end
 
 local function isTeamsFrontmost(teams)
