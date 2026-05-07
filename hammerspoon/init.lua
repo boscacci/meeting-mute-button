@@ -52,6 +52,15 @@ local function alertForMuteState(muteState)
   return "Teams mute toggled"
 end
 
+local function alertForUnavailableTeamsMicControl(muteState)
+  if muteState == "muted" then
+    return "Mic is muted (LED red). No call mic button found."
+  elseif muteState == "unmuted" then
+    return "Mic is hot! (LED green). No call mic button found."
+  end
+  return "LED changed. No call mic button found."
+end
+
 local function isTeamsFrontmost(teams)
   local frontmostApp = hs.application.frontmostApplication()
   return frontmostApp and frontmostApp:bundleID() == teams:bundleID()
@@ -161,8 +170,8 @@ local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
       hs.eventtap.keyStroke({ "cmd", "shift" }, "m", 100000, teams)
       log("Teams left focused after mute shortcut")
     else
-      log("Teams is frontmost; no safe mic action available")
-      hs.alert.show("Teams focused; mic button not found")
+      log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
+      hs.alert.show(alertForUnavailableTeamsMicControl(muteState))
       return
     end
     hs.alert.show(alertForMuteState(muteState))
