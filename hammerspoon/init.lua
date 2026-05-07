@@ -49,6 +49,33 @@ local function alertForMuteState(muteState)
   return "Teams mute toggled"
 end
 
+local function isTeamsFrontmost(teams)
+  local frontmostApp = hs.application.frontmostApplication()
+  return frontmostApp and frontmostApp:bundleID() == teams:bundleID()
+end
+
+local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
+  attempt = attempt or 1
+
+  if isTeamsFrontmost(teams) then
+    log("Teams is frontmost; sending mute shortcut; target state=" .. tostring(muteState))
+    hs.eventtap.keyStroke({ "cmd", "shift" }, "m")
+    log("Teams left focused after mute shortcut")
+    hs.alert.show(alertForMuteState(muteState))
+    return
+  end
+
+  if attempt >= 20 then
+    log("Teams did not become frontmost; skipped mute shortcut")
+    hs.alert.show("Teams did not focus")
+    return
+  end
+
+  hs.timer.doAfter(0.05, function()
+    sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt + 1)
+  end)
+end
+
 local function toggleTeamsMute(muteState)
   local now = hs.timer.secondsSinceEpoch()
   if now - lastToggleAt < 0.4 then
@@ -63,18 +90,11 @@ local function toggleTeamsMute(muteState)
     return
   end
 
-  log("Activating Teams and sending mute shortcut via System Events; target state=" .. tostring(muteState))
-
-  local script = string.format([[
-tell application "Microsoft Teams" to activate
-delay %.2f
-tell application "System Events" to keystroke "m" using {command down, shift down}
-]], teamsActivationDelaySeconds)
-
-  local ok, result = hs.osascript.applescript(script)
-  log("System Events mute shortcut ok=" .. tostring(ok) .. " result=" .. tostring(result))
-  log("Teams left focused after mute shortcut")
-  hs.alert.show(alertForMuteState(muteState))
+  log("Activating Teams before mute shortcut; target state=" .. tostring(muteState))
+  teams:activate(true)
+  hs.timer.doAfter(teamsActivationDelaySeconds, function()
+    sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState)
+  end)
 end
 
 _G.toggleTeamsMuteFromArduinoButton = toggleTeamsMute

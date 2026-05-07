@@ -36,7 +36,7 @@ The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon
 Responsiveness knobs:
 
 - Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
-- Hammerspoon waits `0.15s` after activating Teams before sending the shortcut.
+- Hammerspoon waits `0.15s` after activating Teams, then sends the shortcut only after Teams is confirmed frontmost.
 - Firmware avoids heartbeat spam during normal operation; use the debug log only when needed.
 
 Debug log:
