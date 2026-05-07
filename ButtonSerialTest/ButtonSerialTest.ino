@@ -6,14 +6,12 @@ const uint8_t LED_PIN = 2;
 #else
 const uint8_t LED_PIN = LED_BUILTIN;
 #endif
-const unsigned long DEBOUNCE_MS = 30;
-const unsigned long HEARTBEAT_MS = 1000;
+const unsigned long DEBOUNCE_MS = 15;
 
 int lastRawReading = HIGH;
 int stableReading = HIGH;
 bool muted = false;
 unsigned long lastRawChangeAt = 0;
-unsigned long lastHeartbeatAt = 0;
 
 void setExternalLeds(bool redOn, bool greenOn) {
   digitalWrite(RED_LED_PIN, redOn ? LOW : HIGH);
@@ -23,33 +21,6 @@ void setExternalLeds(bool redOn, bool greenOn) {
 void applyMuteLeds() {
   setExternalLeds(muted, !muted);
   digitalWrite(LED_PIN, muted ? LOW : HIGH);
-}
-
-void runLedDiagnostic() {
-  Serial.println("LED diagnostic: red blink, green blink, both blink");
-
-  for (uint8_t i = 0; i < 3; i++) {
-    setExternalLeds(true, false);
-    delay(250);
-    setExternalLeds(false, false);
-    delay(250);
-  }
-
-  for (uint8_t i = 0; i < 3; i++) {
-    setExternalLeds(false, true);
-    delay(250);
-    setExternalLeds(false, false);
-    delay(250);
-  }
-
-  for (uint8_t i = 0; i < 3; i++) {
-    setExternalLeds(true, true);
-    delay(250);
-    setExternalLeds(false, false);
-    delay(250);
-  }
-
-  applyMuteLeds();
 }
 
 void printState(const char *label, int reading) {
@@ -90,7 +61,6 @@ void setup() {
   Serial.print("Onboard LED mirrors live state on pin ");
   Serial.println(LED_PIN);
   Serial.println("Toggle mode: each debounced press flips red/green");
-  runLedDiagnostic();
   printState("initial", stableReading);
 }
 
@@ -101,7 +71,6 @@ void loop() {
   if (rawReading != lastRawReading) {
     lastRawReading = rawReading;
     lastRawChangeAt = now;
-    printState("raw-change", rawReading);
   }
 
   if ((now - lastRawChangeAt) >= DEBOUNCE_MS && rawReading != stableReading) {
@@ -113,10 +82,5 @@ void loop() {
     } else {
       printState("released", stableReading);
     }
-  }
-
-  if ((now - lastHeartbeatAt) >= HEARTBEAT_MS) {
-    lastHeartbeatAt = now;
-    printState("heartbeat", stableReading);
   }
 }

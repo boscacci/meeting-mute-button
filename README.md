@@ -33,6 +33,12 @@ Repo config: `hammerspoon/init.lua`
 
 The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, and sends `Command+Shift+M` to Microsoft Teams. Alerts use the ESP32 state: `Mic is muted` for red and `Mic is hot!` for green.
 
+Responsiveness knobs:
+
+- Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
+- Hammerspoon waits `0.15s` after activating Teams before sending the shortcut.
+- Firmware avoids heartbeat spam during normal operation; use the debug log only when needed.
+
 Debug log:
 
 ```bash

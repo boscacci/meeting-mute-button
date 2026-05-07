@@ -3,6 +3,7 @@ local logPath = repoRoot .. "/hammerspoon-debug.log"
 local debugHeartbeats = false
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
+local teamsActivationDelaySeconds = 0.15
 local teamsBundleIds = {
   "com.microsoft.teams2",
   "com.microsoft.teams",
@@ -65,11 +66,13 @@ local function toggleTeamsMute(muteState)
   local previousApp = hs.application.frontmostApplication()
   log("Sending Teams mute shortcut via System Events; target state=" .. tostring(muteState))
 
-  local ok, result = hs.osascript.applescript([[
+  local script = string.format([[
 tell application "Microsoft Teams" to activate
-delay 0.8
+delay %.2f
 tell application "System Events" to keystroke "m" using {command down, shift down}
-]])
+]], teamsActivationDelaySeconds)
+
+  local ok, result = hs.osascript.applescript(script)
   log("System Events mute shortcut ok=" .. tostring(ok) .. " result=" .. tostring(result))
   hs.alert.show(alertForMuteState(muteState))
 
