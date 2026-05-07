@@ -31,12 +31,13 @@ arduino-cli monitor -p /dev/cu.usbserial-0001 --config baudrate=115200,dtr=off,r
 
 Repo config: `hammerspoon/init.lua`
 
-The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, activates Microsoft Teams, and sends a process-targeted `Command+Shift+M`. Teams is intentionally left focused after each button press. Alerts use the ESP32 state: `Mic is muted` for red and `Mic is hot!` for green.
+The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, activates Microsoft Teams, and sends an app-targeted `Command+Shift+M`. Teams is intentionally left focused after each button press. Alerts use the ESP32 state: `Mic is muted` for red and `Mic is hot!` for green.
 
 Responsiveness knobs:
 
 - Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
 - Hammerspoon waits `0.15s` after activating Teams, then sends the shortcut only after Teams is confirmed frontmost.
+- Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged.
 - Firmware avoids heartbeat spam during normal operation; use the debug log only when needed.
 
 Debug log:

@@ -12,6 +12,7 @@ local teamsBundleIds = {
 local serialPort = nil
 local serialBuffer = ""
 local lastToggleAt = 0
+local serialReconnectGeneration = 0
 
 local function log(message)
   local line = os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(message)
@@ -54,25 +55,12 @@ local function isTeamsFrontmost(teams)
   return frontmostApp and frontmostApp:bundleID() == teams:bundleID()
 end
 
-local function sendTeamsProcessKeystroke()
-  local script = [[
-tell application "Microsoft Teams" to activate
-tell application "System Events" to tell process "Microsoft Teams"
-  set frontmost to true
-  keystroke "m" using {command down, shift down}
-  get frontmost
-end tell
-]]
-  return hs.osascript.applescript(script)
-end
-
 local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
   attempt = attempt or 1
 
   if isTeamsFrontmost(teams) then
-    log("Teams is frontmost; sending process-targeted mute shortcut; target state=" .. tostring(muteState))
-    local ok, result = sendTeamsProcessKeystroke()
-    log("Teams process-targeted mute shortcut ok=" .. tostring(ok) .. " result=" .. tostring(result))
+    log("Teams is frontmost; sending app-targeted mute shortcut; target state=" .. tostring(muteState))
+    hs.eventtap.keyStroke({ "cmd", "shift" }, "m", 100000, teams)
     log("Teams left focused after mute shortcut")
     hs.alert.show(alertForMuteState(muteState))
     return
@@ -134,11 +122,45 @@ local function handleSerialData(data)
   end
 end
 
-local function openSerialPort()
+local function closeSerialPort(reason)
+  if not serialPort then
+    return
+  end
+
+  log("Closing serial port: " .. tostring(reason))
+  pcall(function()
+    serialPort:callback(nil)
+  end)
+  pcall(function()
+    if serialPort:isOpen() then
+      serialPort:close()
+    end
+  end)
+  serialPort = nil
+  serialBuffer = ""
+end
+
+local openSerialPort
+
+local function scheduleSerialOpen(delaySeconds)
+  serialReconnectGeneration = serialReconnectGeneration + 1
+  local generation = serialReconnectGeneration
+  hs.timer.doAfter(delaySeconds, function()
+    if generation == serialReconnectGeneration then
+      openSerialPort()
+    else
+      log("Skipped stale serial reconnect generation=" .. tostring(generation))
+    end
+  end)
+end
+
+openSerialPort = function()
   if serialPort and serialPort:isOpen() then
     log("Serial port already open: " .. serialPortPath)
     return
   end
+
+  closeSerialPort("pre-open cleanup")
 
   log("Opening serial port: " .. serialPortPath)
   serialPort = hs.serial.newFromPath(serialPortPath)
@@ -156,10 +178,14 @@ local function openSerialPort()
       handleSerialData(message)
     elseif callbackType == "removed" or callbackType == "closed" then
       log("Serial callback: " .. tostring(callbackType))
+      closeSerialPort(callbackType)
+      scheduleSerialOpen(1)
       hs.alert.show("Arduino serial disconnected")
     elseif callbackType == "error" then
       log("Serial callback: " .. tostring(callbackType))
       log("Arduino serial error: " .. tostring(message))
+      closeSerialPort("error")
+      scheduleSerialOpen(1)
       hs.alert.show("Arduino serial error: " .. tostring(message))
     end
   end)
@@ -175,10 +201,11 @@ end
 
 hs.serial.deviceCallback(function()
   log("Serial device list changed")
-  hs.timer.doAfter(1, openSerialPort)
+  closeSerialPort("device list changed")
+  scheduleSerialOpen(1)
 end)
 
 hs.hotkey.bind({ "cmd", "alt", "ctrl" }, "M", toggleTeamsMute)
-hs.timer.doAfter(1, openSerialPort)
+scheduleSerialOpen(1)
 hs.alert.show("Mute button config loaded")
 log("Mute button config loaded")
