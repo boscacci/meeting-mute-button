@@ -54,12 +54,25 @@ local function isTeamsFrontmost(teams)
   return frontmostApp and frontmostApp:bundleID() == teams:bundleID()
 end
 
+local function sendTeamsProcessKeystroke()
+  local script = [[
+tell application "Microsoft Teams" to activate
+tell application "System Events" to tell process "Microsoft Teams"
+  set frontmost to true
+  keystroke "m" using {command down, shift down}
+  get frontmost
+end tell
+]]
+  return hs.osascript.applescript(script)
+end
+
 local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
   attempt = attempt or 1
 
   if isTeamsFrontmost(teams) then
-    log("Teams is frontmost; sending mute shortcut; target state=" .. tostring(muteState))
-    hs.eventtap.keyStroke({ "cmd", "shift" }, "m")
+    log("Teams is frontmost; sending process-targeted mute shortcut; target state=" .. tostring(muteState))
+    local ok, result = sendTeamsProcessKeystroke()
+    log("Teams process-targeted mute shortcut ok=" .. tostring(ok) .. " result=" .. tostring(result))
     log("Teams left focused after mute shortcut")
     hs.alert.show(alertForMuteState(muteState))
     return

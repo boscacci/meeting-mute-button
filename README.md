@@ -31,7 +31,7 @@ arduino-cli monitor -p /dev/cu.usbserial-0001 --config baudrate=115200,dtr=off,r
 
 Repo config: `hammerspoon/init.lua`
 
-The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, activates Microsoft Teams, and sends `Command+Shift+M`. Teams is intentionally left focused after each button press. Alerts use the ESP32 state: `Mic is muted` for red and `Mic is hot!` for green.
+The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, activates Microsoft Teams, and sends a process-targeted `Command+Shift+M`. Teams is intentionally left focused after each button press. Alerts use the ESP32 state: `Mic is muted` for red and `Mic is hot!` for green.
 
 Responsiveness knobs:
 
