@@ -35,7 +35,7 @@ The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon
 
 Hammerspoon first tries to find and press a Teams mic/mute button through Accessibility. Teams currently exposes the in-call mic control fairly deep in the Accessibility tree, so the search depth is intentionally `24`. If Teams is focused but no call mic button is available, the alert still reports the ESP32/LED state, such as `Mic is muted (LED red). No call mic button found.` Keyboard shortcut emission is disabled in `hammerspoon/init.lua` with `sendKeyboardShortcut = false`, because `Command+Shift+M` can leak into Terminal and open man-page windows.
 
-When Hammerspoon can read the Teams mic button text, it treats `Mute mic` as "Teams is currently unmuted" and `Unmute mic` as "Teams is currently muted." It only clicks when Teams differs from the ESP32/LED state, so the physical light remains the source of truth instead of blindly toggling.
+When Hammerspoon can read the Teams mic button text, it treats `Mute mic` as "Teams is currently unmuted" and `Unmute mic` as "Teams is currently muted." It only clicks when Teams differs from the ESP32/LED state, so the physical light remains the source of truth instead of blindly toggling. Teams' WebView can report a successful Accessibility press without changing the call state, so Hammerspoon uses Accessibility to find/read the button and then sends a mouse-level click at the button center.
 
 Responsiveness knobs:
 

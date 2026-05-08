@@ -49,6 +49,16 @@ def test_teams_mic_click_respects_led_target_state():
     assert "Teams mic already matches LED state; no click needed; state=" in config
 
 
+def test_teams_mic_toggle_uses_mouse_click_for_webview_button():
+    config = CONFIG.read_text()
+
+    assert "local function clickElementCenter(element)" in config
+    assert 'geometryAttribute(element, "AXPosition")' in config
+    assert 'geometryAttribute(element, "AXSize")' in config
+    assert "hs.eventtap.leftClick" in config
+    assert "button:performAction(\"AXPress\")" not in config
+
+
 def test_firmware_mute_state_mapping_is_led_color_source_of_truth():
     firmware = FIRMWARE.read_text()
 

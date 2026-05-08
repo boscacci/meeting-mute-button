@@ -112,6 +112,34 @@ local function teamsMicStateFromButtonText(text)
   return nil
 end
 
+local function geometryAttribute(element, attribute)
+  local ok, value = pcall(function()
+    return element:attributeValue(attribute)
+  end)
+  if ok and type(value) == "table" then
+    return value
+  end
+  return nil
+end
+
+local function clickElementCenter(element)
+  local position = geometryAttribute(element, "AXPosition")
+  local size = geometryAttribute(element, "AXSize")
+  if not position or not size then
+    log("Could not read Teams mic button geometry for mouse click")
+    return false
+  end
+
+  local previousMousePosition = hs.mouse.absolutePosition()
+  local clickPoint = {
+    x = position.x + (size.w / 2),
+    y = position.y + (size.h / 2),
+  }
+  hs.eventtap.leftClick(clickPoint)
+  hs.mouse.absolutePosition(previousMousePosition)
+  return true
+end
+
 local function findMicButton(element, depth, seen)
   if not element or depth > maxAccessibilitySearchDepth then
     return nil
@@ -173,12 +201,10 @@ local function clickTeamsMicButton(teams, targetMuteState)
     return false
   end
 
-  log("Pressing Teams mic/mute accessibility element: " .. text .. " target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentTeamsMicState))
-  local ok, result = pcall(function()
-    return button:performAction("AXPress")
-  end)
-  log("Teams mic/mute accessibility press ok=" .. tostring(ok) .. " result=" .. tostring(result))
-  return ok
+  log("Mouse-clicking Teams mic button: " .. text .. " target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentTeamsMicState))
+  local clicked = clickElementCenter(button)
+  log("Teams mic mouse click result=" .. tostring(clicked))
+  return clicked
 end
 
 local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
