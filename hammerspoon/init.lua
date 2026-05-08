@@ -4,6 +4,7 @@ local debugHeartbeats = false
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
 local teamsActivationDelaySeconds = 0.15
+local maxAccessibilitySearchDepth = 24
 local useAccessibilityMicButton = true
 local sendKeyboardShortcut = false
 local teamsBundleIds = {
@@ -82,6 +83,7 @@ local function elementText(element)
     stringAttribute(element, "AXDescription"),
     stringAttribute(element, "AXHelp"),
     stringAttribute(element, "AXValue"),
+    stringAttribute(element, "AXIdentifier"),
   }, " ")
 end
 
@@ -100,8 +102,18 @@ local function canPress(element)
   return false
 end
 
+local function teamsMicStateFromButtonText(text)
+  local lower = text:lower()
+  if lower:match("unmute") then
+    return "muted"
+  elseif lower:match("%f[%a]mute%f[%A]") then
+    return "unmuted"
+  end
+  return nil
+end
+
 local function findMicButton(element, depth, seen)
-  if not element or depth > 14 then
+  if not element or depth > maxAccessibilitySearchDepth then
     return nil
   end
 
@@ -137,7 +149,7 @@ local function findMicButton(element, depth, seen)
   return nil
 end
 
-local function clickTeamsMicButton(teams)
+local function clickTeamsMicButton(teams, targetMuteState)
   local appElement = hs.axuielement.applicationElement(teams)
   if not appElement then
     log("Could not get Teams accessibility root")
@@ -150,7 +162,18 @@ local function clickTeamsMicButton(teams)
     return false
   end
 
-  log("Pressing Teams mic/mute accessibility element: " .. text)
+  local currentTeamsMicState = teamsMicStateFromButtonText(text)
+  if muteStates[targetMuteState] and currentTeamsMicState == targetMuteState then
+    log("Teams mic already matches LED state; no click needed; state=" .. targetMuteState .. " text=" .. text)
+    return true
+  end
+
+  if muteStates[targetMuteState] and not currentTeamsMicState then
+    log("Teams mic button found, but state could not be inferred; text=" .. text)
+    return false
+  end
+
+  log("Pressing Teams mic/mute accessibility element: " .. text .. " target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentTeamsMicState))
   local ok, result = pcall(function()
     return button:performAction("AXPress")
   end)
@@ -162,8 +185,8 @@ local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
   attempt = attempt or 1
 
   if isTeamsFrontmost(teams) then
-    if useAccessibilityMicButton and clickTeamsMicButton(teams) then
-      log("Teams left focused after accessibility mic button press")
+    if useAccessibilityMicButton and clickTeamsMicButton(teams, muteState) then
+      log("Teams mic state handled through accessibility")
     elseif sendKeyboardShortcut then
       log("Teams is frontmost; sending app-targeted mute shortcut; target state=" .. tostring(muteState))
       hs.eventtap.keyStroke({ "cmd", "shift" }, "m", 100000, teams)

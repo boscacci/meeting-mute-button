@@ -30,6 +30,25 @@ def test_keyboard_shortcut_fallback_stays_disabled():
     assert "local sendKeyboardShortcut = false" in config
 
 
+def test_teams_accessibility_search_reaches_current_call_toolbar_depth():
+    config = CONFIG.read_text()
+
+    assert "local maxAccessibilitySearchDepth = 24" in config
+    assert "depth > maxAccessibilitySearchDepth" in config
+    assert "depth > 14" not in config
+
+
+def test_teams_mic_click_respects_led_target_state():
+    config = CONFIG.read_text()
+
+    assert "local function teamsMicStateFromButtonText(text)" in config
+    assert 'return "muted"' in config
+    assert 'return "unmuted"' in config
+    assert "clickTeamsMicButton(teams, muteState)" in config
+    assert "currentTeamsMicState == targetMuteState" in config
+    assert "Teams mic already matches LED state; no click needed; state=" in config
+
+
 def test_firmware_mute_state_mapping_is_led_color_source_of_truth():
     firmware = FIRMWARE.read_text()
 
