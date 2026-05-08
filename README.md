@@ -2,13 +2,22 @@
 
 ESP32 hardware mute button for Microsoft Teams on macOS.
 
+```text
+      .----------------.
+      |  MUTE-O-MATIC  |
+      |  red    green  |
+      '-----.____.-----'
+            / || \
+          GND P0 USB
+```
+
 ## Wiring
 
 - Button: one side to `GND`, other side to `GPIO0/P0`.
 - RGB LED: common anode/longest pin to `3V3`.
 - RGB red leg through a resistor to `GPIO18`.
 - RGB green leg through a resistor to `GPIO19`.
-- Current resistors in use: `1k` works but dim; `300 ohm` is brighter.
+- Resistors: `1k` works but is dim; about `300 ohm` is brighter.
 
 ## Firmware
 
@@ -31,24 +40,37 @@ arduino-cli monitor -p /dev/cu.usbserial-0001 --config baudrate=115200,dtr=off,r
 
 Repo config: `hammerspoon/init.lua`
 
-The installed `~/.hammerspoon/init.lua` should load the repo config. Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, and activates Microsoft Teams. Teams is intentionally left focused after each button press. The ESP32 serial state is the source of truth for both LED color and Teams intent: `muted` means red/`Mic is muted`, and `unmuted` means green/`Mic is hot!`.
+The installed `~/.hammerspoon/init.lua` should load the repo config:
 
-Hammerspoon first tries to find and press a Teams mic/mute button through Accessibility. Teams currently exposes the in-call mic control fairly deep in the Accessibility tree, so the search depth is intentionally `24`. If Teams is focused but no call mic button is available, the alert still reports the ESP32/LED state, such as `Mic is muted (LED red). No call mic button found.` Keyboard shortcut emission is disabled in `hammerspoon/init.lua` with `sendKeyboardShortcut = false`, because `Command+Shift+M` can leak into Terminal and open man-page windows.
+```lua
+dofile("/Users/rob/repos/mute-button/hammerspoon/init.lua")
+```
 
-When Hammerspoon can read the Teams mic button text, it treats `Mute mic` as "Teams is currently unmuted" and `Unmute mic` as "Teams is currently muted." It only clicks when Teams differs from the ESP32/LED state, so the physical light remains the source of truth instead of blindly toggling. Teams' WebView can report a successful Accessibility press without changing the call state, so Hammerspoon uses Accessibility to find/read the button and then sends a mouse-level click at the button center.
+Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, activates Microsoft Teams, and leaves Teams focused.
+
+State is intentionally one-way:
+
+- `muted` means red LED, onboard LED off, and Teams should be muted.
+- `unmuted` means green LED, onboard LED on, and Teams should be live.
+
+Hammerspoon uses Accessibility to find and read Teams' in-call mic button. Teams currently exposes that control deep in the Accessibility tree, so the search depth is intentionally `24`. `Mute mic` means Teams is currently unmuted; `Unmute mic` means Teams is currently muted. If Teams already matches the ESP32/LED state, Hammerspoon does nothing.
+
+Teams' WebView can report a successful Accessibility press without changing call state, so Hammerspoon uses Accessibility only to locate/read the button, then sends a mouse-level click at the button center when a state change is needed. There is no keyboard shortcut fallback; `Command+Shift+M` can leak into Terminal and open man-page windows.
 
 Responsiveness knobs:
 
 - Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
-- Hammerspoon waits `0.15s` after activating Teams, then sends the shortcut only after Teams is confirmed frontmost.
+- Hammerspoon waits `0.15s` after activating Teams, then acts only after Teams is confirmed frontmost.
 - Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged.
-- Firmware avoids heartbeat spam during normal operation; use the debug log only when needed.
+- Firmware avoids heartbeat spam during normal operation.
 
 Debug log:
 
 ```bash
 tail -f /Users/rob/repos/mute-button/hammerspoon-debug.log
 ```
+
+If Teams shows live/green but nobody hears you, check Teams' selected microphone. During setup, Teams was found listening to `HD Webcam C615` while speakers were on `Scarlett Solo USB`.
 
 ## Hardware cleanup ideas
 

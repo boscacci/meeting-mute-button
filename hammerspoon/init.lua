@@ -5,8 +5,6 @@ local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
 local teamsActivationDelaySeconds = 0.15
 local maxAccessibilitySearchDepth = 24
-local useAccessibilityMicButton = true
-local sendKeyboardShortcut = false
 local teamsBundleIds = {
   "com.microsoft.teams2",
   "com.microsoft.teams",
@@ -19,6 +17,25 @@ local serialReconnectGeneration = 0
 local muteStates = {
   muted = { name = "muted", ledColor = "red", alert = "Mic is muted" },
   unmuted = { name = "unmuted", ledColor = "green", alert = "Mic is hot!" },
+}
+local accessibilityTextAttributes = {
+  "AXRole",
+  "AXTitle",
+  "AXDescription",
+  "AXHelp",
+  "AXValue",
+  "AXIdentifier",
+}
+local buttonRoles = {
+  AXButton = true,
+  AXCheckBox = true,
+  AXToggle = true,
+}
+local micTextPatterns = {
+  "mute",
+  "unmute",
+  "microphone",
+  "%f[%a]mic%f[%A]",
 }
 
 local function log(message)
@@ -66,25 +83,38 @@ local function isTeamsFrontmost(teams)
   return frontmostApp and frontmostApp:bundleID() == teams:bundleID()
 end
 
-local function stringAttribute(element, attribute)
+local function attributeValue(element, attribute)
   local ok, value = pcall(function()
     return element:attributeValue(attribute)
   end)
-  if ok and type(value) == "string" then
+  if ok then
     return value
   end
-  return ""
+  return nil
+end
+
+local function typedAttribute(element, attribute, expectedType)
+  local value = attributeValue(element, attribute)
+  if type(value) == expectedType then
+    return value
+  end
+  return nil
+end
+
+local function stringAttribute(element, attribute)
+  return typedAttribute(element, attribute, "string") or ""
+end
+
+local function tableAttribute(element, attribute)
+  return typedAttribute(element, attribute, "table")
 end
 
 local function elementText(element)
-  return table.concat({
-    stringAttribute(element, "AXRole"),
-    stringAttribute(element, "AXTitle"),
-    stringAttribute(element, "AXDescription"),
-    stringAttribute(element, "AXHelp"),
-    stringAttribute(element, "AXValue"),
-    stringAttribute(element, "AXIdentifier"),
-  }, " ")
+  local parts = {}
+  for _, attribute in ipairs(accessibilityTextAttributes) do
+    table.insert(parts, stringAttribute(element, attribute))
+  end
+  return table.concat(parts, " ")
 end
 
 local function canPress(element)
@@ -112,19 +142,9 @@ local function teamsMicStateFromButtonText(text)
   return nil
 end
 
-local function geometryAttribute(element, attribute)
-  local ok, value = pcall(function()
-    return element:attributeValue(attribute)
-  end)
-  if ok and type(value) == "table" then
-    return value
-  end
-  return nil
-end
-
 local function clickElementCenter(element)
-  local position = geometryAttribute(element, "AXPosition")
-  local size = geometryAttribute(element, "AXSize")
+  local position = tableAttribute(element, "AXPosition")
+  local size = tableAttribute(element, "AXSize")
   if not position or not size then
     log("Could not read Teams mic button geometry for mouse click")
     return false
@@ -153,17 +173,20 @@ local function findMicButton(element, depth, seen)
 
   local role = stringAttribute(element, "AXRole")
   local text = elementText(element):lower()
-  local isButtonLike = role == "AXButton" or role == "AXCheckBox" or role == "AXToggle"
-  local mentionsMic = text:match("mute") or text:match("unmute") or text:match("microphone") or text:match("%f[%a]mic%f[%A]")
+  local mentionsMic = false
+  for _, pattern in ipairs(micTextPatterns) do
+    if text:match(pattern) then
+      mentionsMic = true
+      break
+    end
+  end
 
-  if isButtonLike and canPress(element) and mentionsMic then
+  if buttonRoles[role] and canPress(element) and mentionsMic then
     return element, text
   end
 
-  local ok, children = pcall(function()
-    return element:attributeValue("AXChildren")
-  end)
-  if not ok or type(children) ~= "table" then
+  local children = tableAttribute(element, "AXChildren")
+  if not children then
     return nil
   end
 
@@ -177,7 +200,7 @@ local function findMicButton(element, depth, seen)
   return nil
 end
 
-local function clickTeamsMicButton(teams, targetMuteState)
+local function handleTeamsMicState(teams, targetMuteState)
   local appElement = hs.axuielement.applicationElement(teams)
   if not appElement then
     log("Could not get Teams accessibility root")
@@ -207,16 +230,12 @@ local function clickTeamsMicButton(teams, targetMuteState)
   return clicked
 end
 
-local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
+local function handleTeamsWhenFrontmost(teams, muteState, attempt)
   attempt = attempt or 1
 
   if isTeamsFrontmost(teams) then
-    if useAccessibilityMicButton and clickTeamsMicButton(teams, muteState) then
+    if handleTeamsMicState(teams, muteState) then
       log("Teams mic state handled through accessibility")
-    elseif sendKeyboardShortcut then
-      log("Teams is frontmost; sending app-targeted mute shortcut; target state=" .. tostring(muteState))
-      hs.eventtap.keyStroke({ "cmd", "shift" }, "m", 100000, teams)
-      log("Teams left focused after mute shortcut")
     else
       log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
       hs.alert.show(alertForUnavailableTeamsMicControl(muteState))
@@ -227,17 +246,22 @@ local function sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt)
   end
 
   if attempt >= 20 then
-    log("Teams did not become frontmost; skipped mute shortcut")
+    log("Teams did not become frontmost; skipped mic update")
     hs.alert.show("Teams did not focus")
     return
   end
 
   hs.timer.doAfter(0.05, function()
-    sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState, attempt + 1)
+    handleTeamsWhenFrontmost(teams, muteState, attempt + 1)
   end)
 end
 
 local function toggleTeamsMute(muteState)
+  if not muteStates[muteState] then
+    log("Ignored unknown mute state: " .. tostring(muteState))
+    return
+  end
+
   local now = hs.timer.secondsSinceEpoch()
   if now - lastToggleAt < 0.4 then
     log("Ignored duplicate toggle inside debounce window")
@@ -251,10 +275,10 @@ local function toggleTeamsMute(muteState)
     return
   end
 
-  log("Activating Teams before mute shortcut; target state=" .. tostring(muteState))
+  log("Activating Teams before mic update; target state=" .. tostring(muteState))
   teams:activate(true)
   hs.timer.doAfter(teamsActivationDelaySeconds, function()
-    sendMuteShortcutWhenTeamsIsFrontmost(teams, muteState)
+    handleTeamsWhenFrontmost(teams, muteState)
   end)
 end
 
@@ -365,7 +389,6 @@ hs.serial.deviceCallback(function()
   scheduleSerialOpen(1)
 end)
 
-hs.hotkey.bind({ "cmd", "alt", "ctrl" }, "M", toggleTeamsMute)
 scheduleSerialOpen(1)
 hs.alert.show("Mute button config loaded")
 log("Mute button config loaded")

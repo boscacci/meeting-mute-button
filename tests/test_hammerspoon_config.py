@@ -27,7 +27,18 @@ def test_unavailable_teams_mic_control_alert_reports_led_state():
 def test_keyboard_shortcut_fallback_stays_disabled():
     config = CONFIG.read_text()
 
-    assert "local sendKeyboardShortcut = false" in config
+    assert "sendKeyboardShortcut" not in config
+    assert "hs.eventtap.keyStroke" not in config
+    assert '"cmd", "shift"' not in config
+
+
+def test_hammerspoon_accessibility_helpers_are_consolidated():
+    config = CONFIG.read_text()
+
+    assert "local accessibilityTextAttributes = {" in config
+    assert "local buttonRoles = {" in config
+    assert "local function attributeValue(element, attribute)" in config
+    assert "local function typedAttribute(element, attribute, expectedType)" in config
 
 
 def test_teams_accessibility_search_reaches_current_call_toolbar_depth():
@@ -44,7 +55,7 @@ def test_teams_mic_click_respects_led_target_state():
     assert "local function teamsMicStateFromButtonText(text)" in config
     assert 'return "muted"' in config
     assert 'return "unmuted"' in config
-    assert "clickTeamsMicButton(teams, muteState)" in config
+    assert "handleTeamsMicState(teams, muteState)" in config
     assert "currentTeamsMicState == targetMuteState" in config
     assert "Teams mic already matches LED state; no click needed; state=" in config
 
@@ -53,10 +64,18 @@ def test_teams_mic_toggle_uses_mouse_click_for_webview_button():
     config = CONFIG.read_text()
 
     assert "local function clickElementCenter(element)" in config
-    assert 'geometryAttribute(element, "AXPosition")' in config
-    assert 'geometryAttribute(element, "AXSize")' in config
+    assert 'tableAttribute(element, "AXPosition")' in config
+    assert 'tableAttribute(element, "AXSize")' in config
     assert "hs.eventtap.leftClick" in config
     assert "button:performAction(\"AXPress\")" not in config
+
+
+def test_hammerspoon_rejects_unknown_state_and_has_no_manual_toggle_path():
+    config = CONFIG.read_text()
+
+    assert "if not muteStates[muteState] then" in config
+    assert "Ignored unknown mute state:" in config
+    assert "hs.hotkey.bind" not in config
 
 
 def test_firmware_mute_state_mapping_is_led_color_source_of_truth():
