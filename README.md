@@ -11,6 +11,15 @@ ESP32 hardware mute button for Microsoft Teams on macOS.
           GND P0 USB
 ```
 
+## Instructable
+
+Publishing draft: [`INSTRUCTABLE.md`](INSTRUCTABLE.md)
+
+Editable graphics:
+
+- [Figma design board](https://www.figma.com/design/ZorewgAc0ObJYZJHdDFAW9)
+- [FigJam system flow](https://www.figma.com/board/YSxSCPhi9Viuwuc8APxjnH)
+
 ## Wiring
 
 - Button: one side to `GND`, other side to `GPIO0/P0`.
