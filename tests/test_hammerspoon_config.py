@@ -106,7 +106,19 @@ def test_hammerspoon_reconciles_latest_led_state_retroactively():
     assert "desiredMuteState = muteState" in config
     assert "runMeetingReconciliation(requestGeneration, 1)" in config
     assert "scheduleMeetingReconciliation(requestGeneration, attempt + 1, reconciliationIntervalSeconds)" in config
-    assert "Reconciliation attempted for desired LED state; continuing verification" in config
+    assert "Reconciliation attempted for desired LED state; result=" in config
+
+
+def test_reconciliation_loop_is_single_flight_not_nested_timers():
+    config = CONFIG.read_text()
+
+    assert "local reconciled = target.handle(app, targetMuteState, requestGeneration, attempt == 1)" in config
+    assert "return false" in config
+    assert "return true" in config
+    assert "handleZoomWhenFrontmost" not in config
+    assert "handleTeamsWhenFrontmost" not in config
+    assert "meetingActivationDelaySeconds" not in config
+    assert "hs.timer.doAfter(meetingActivationDelaySeconds" not in config
 
 
 def test_zoom_queues_latest_state_while_audio_menu_settles():

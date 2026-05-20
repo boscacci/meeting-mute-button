@@ -6,7 +6,6 @@ local reconciliationIntervalSeconds = 0.25
 local maxReconciliationAttempts = 24
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
-local meetingActivationDelaySeconds = 0.15
 local maxAccessibilitySearchDepth = 24
 local zoomPostPressSettleSeconds = 0.45
 local zoomBundleIds = {
@@ -271,41 +270,6 @@ local function handleZoomMicState(zoom, targetMuteState)
   return pressed
 end
 
-local function handleZoomWhenFrontmost(zoom, muteState, requestGeneration, showStatus, attempt)
-  attempt = attempt or 1
-  if not isLatestMeetingRequest(requestGeneration) then
-    return
-  end
-
-  if isAppFrontmost(zoom) then
-    if handleZoomMicState(zoom, muteState) then
-      log("Zoom mic state handled through accessibility")
-    else
-      log("Zoom is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-      if showStatus then
-        showAlert(alertForUnavailableZoomMicControl(muteState))
-      end
-      return
-    end
-    if showStatus then
-      showAlert(alertForMuteState(muteState))
-    end
-    return
-  end
-
-  if attempt >= 20 then
-    log("Zoom did not become frontmost; skipped mic update")
-    if showStatus then
-      showAlert("Zoom did not focus")
-    end
-    return
-  end
-
-  hs.timer.doAfter(0.05, function()
-    handleZoomWhenFrontmost(zoom, muteState, requestGeneration, showStatus, attempt + 1)
-  end)
-end
-
 local function findMicButton(element, depth, seen)
   if not element or depth > maxAccessibilitySearchDepth then
     return nil
@@ -376,78 +340,62 @@ local function handleTeamsMicState(teams, targetMuteState)
   return clicked
 end
 
-local function handleTeamsWhenFrontmost(teams, muteState, requestGeneration, showStatus, attempt)
-  attempt = attempt or 1
-  if not isLatestMeetingRequest(requestGeneration) then
-    return
-  end
-
-  if isAppFrontmost(teams) then
-    if handleTeamsMicState(teams, muteState) then
-      log("Teams mic state handled through accessibility")
-    else
-      log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-      if showStatus then
-        showAlert(alertForUnavailableTeamsMicControl(muteState))
-      end
-      return
-    end
-    if showStatus then
-      showAlert(alertForMuteState(muteState))
-    end
-    return
-  end
-
-  if attempt >= 20 then
-    log("Teams did not become frontmost; skipped mic update")
-    if showStatus then
-      showAlert("Teams did not focus")
-    end
-    return
-  end
-
-  hs.timer.doAfter(0.05, function()
-    handleTeamsWhenFrontmost(teams, muteState, requestGeneration, showStatus, attempt + 1)
-  end)
-end
-
 local function handleZoomTarget(zoom, muteState, requestGeneration, showStatus)
   if not isLatestMeetingRequest(requestGeneration) then
-    return
+    return false
   end
 
   local settleRemaining = (zoomLastPressAt + zoomPostPressSettleSeconds) - hs.timer.secondsSinceEpoch()
   if settleRemaining > 0 then
     log("Zoom audio menu is settling; queued target state=" .. tostring(muteState) .. " wait=" .. string.format("%.2f", settleRemaining))
-    hs.timer.doAfter(settleRemaining, function()
-      if isLatestMeetingRequest(requestGeneration) then
-        handleZoomTarget(zoom, muteState, requestGeneration, showStatus)
-      end
-    end)
-    return
+    return false
   end
 
-  log("Activating Zoom before mic update; target state=" .. tostring(muteState))
-  zoom:activate(true)
-  hs.timer.doAfter(meetingActivationDelaySeconds, function()
-    if isLatestMeetingRequest(requestGeneration) then
-      handleZoomWhenFrontmost(zoom, muteState, requestGeneration, showStatus)
+  if not isAppFrontmost(zoom) then
+    log("Activating Zoom before mic update; target state=" .. tostring(muteState))
+    zoom:activate(true)
+    return false
+  end
+
+  if handleZoomMicState(zoom, muteState) then
+    log("Zoom mic state handled through accessibility")
+    if showStatus then
+      showAlert(alertForMuteState(muteState))
     end
-  end)
+    return true
+  end
+
+  log("Zoom is frontmost; no safe mic action available; target state=" .. tostring(muteState))
+  if showStatus then
+    showAlert(alertForUnavailableZoomMicControl(muteState))
+  end
+  return false
 end
 
 local function handleTeamsTarget(teams, muteState, requestGeneration, showStatus)
   if not isLatestMeetingRequest(requestGeneration) then
-    return
+    return false
   end
 
-  log("Activating Teams before mic update; target state=" .. tostring(muteState))
-  teams:activate(true)
-  hs.timer.doAfter(meetingActivationDelaySeconds, function()
-    if isLatestMeetingRequest(requestGeneration) then
-      handleTeamsWhenFrontmost(teams, muteState, requestGeneration, showStatus)
+  if not isAppFrontmost(teams) then
+    log("Activating Teams before mic update; target state=" .. tostring(muteState))
+    teams:activate(true)
+    return false
+  end
+
+  if handleTeamsMicState(teams, muteState) then
+    log("Teams mic state handled through accessibility")
+    if showStatus then
+      showAlert(alertForMuteState(muteState))
     end
-  end)
+    return true
+  end
+
+  log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
+  if showStatus then
+    showAlert(alertForUnavailableTeamsMicControl(muteState))
+  end
+  return false
 end
 
 -- Priority is intentionally pragmatic: Google Meet can fit here later by
@@ -496,8 +444,8 @@ runMeetingReconciliation = function(requestGeneration, attempt)
     end
   else
     log("Reconciliation attempt=" .. tostring(attempt) .. " target=" .. target.name .. " desired LED state=" .. targetMuteState)
-    target.handle(app, targetMuteState, requestGeneration, attempt == 1)
-    log("Reconciliation attempted for desired LED state; continuing verification")
+    local reconciled = target.handle(app, targetMuteState, requestGeneration, attempt == 1)
+    log("Reconciliation attempted for desired LED state; result=" .. tostring(reconciled) .. "; continuing verification")
   end
 
   if attempt >= maxReconciliationAttempts then
