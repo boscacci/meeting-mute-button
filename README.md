@@ -11,14 +11,16 @@ ESP32 hardware mute button for Zoom and Microsoft Teams on macOS.
           GND P0 USB
 ```
 
-## Instructable
+## Docs And Graphics
 
-Publishing draft: [`INSTRUCTABLE.md`](INSTRUCTABLE.md)
+Publishing draft / blog-post source: [`INSTRUCTABLE.md`](INSTRUCTABLE.md)
 
 Editable graphics:
 
 - [Figma design board](https://www.figma.com/design/ZorewgAc0ObJYZJHdDFAW9)
 - [FigJam system flow](https://www.figma.com/board/YSxSCPhi9Viuwuc8APxjnH)
+
+The FigJam board includes editable diagrams named `Mute Button System Flow` and `Latest LED Wins State Machine`.
 
 ## Wiring
 
