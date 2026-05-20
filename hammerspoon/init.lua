@@ -418,6 +418,12 @@ local function meetingCommandSettleRemaining()
   return 0
 end
 
+local function alreadyCommandedCurrentState(targetMuteState)
+  return lastMeetingCommand
+    and lastMeetingCommand.version == desiredStateVersion
+    and lastMeetingCommand.targetState == targetMuteState
+end
+
 local function retryMeetingController(delaySeconds, reason)
   if controllerAttempt >= maxControllerAttempts then
     local state = stateFor(desiredMuteState)
@@ -489,6 +495,13 @@ runMeetingController = function(reason)
   end
 
   stableReconciliationMatches = 0
+  if alreadyCommandedCurrentState(targetMuteState) then
+    local state = stateFor(targetMuteState)
+    log("Meeting command already sent for desired LED state; not retrying without a new button press; desired LED state=" .. targetMuteState .. " observed state=" .. tostring(observation.state) .. " version=" .. tostring(desiredStateVersion))
+    showAlert(state.alert .. " (LED " .. state.ledColor .. "; app did not confirm)")
+    return
+  end
+
   local applied = target.apply(app, observation, targetMuteState)
   log("Meeting command result=" .. tostring(applied) .. " target=" .. target.name .. " desired LED state=" .. targetMuteState)
   if not applied then

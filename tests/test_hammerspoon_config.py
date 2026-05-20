@@ -163,6 +163,18 @@ def test_hammerspoon_waits_for_in_flight_commands_before_trusting_app_state():
     assert 'scheduleMeetingController(remaining, "command-settle")' in config
 
 
+def test_hammerspoon_never_retries_same_app_command_for_one_led_state_version():
+    config = CONFIG.read_text()
+
+    assert "local function alreadyCommandedCurrentState(targetMuteState)" in config
+    assert "lastMeetingCommand.version == desiredStateVersion" in config
+    assert "lastMeetingCommand.targetState == targetMuteState" in config
+    assert "Meeting command already sent for desired LED state; not retrying without a new button press" in config
+    assert "app did not confirm" in config
+    assert "local applied = target.apply(app, observation, targetMuteState)" in config
+    assert config.index("alreadyCommandedCurrentState(targetMuteState)") < config.index("local applied = target.apply(app, observation, targetMuteState)")
+
+
 def test_zoom_queues_latest_state_while_audio_menu_settles():
     config = CONFIG.read_text()
 

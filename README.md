@@ -81,6 +81,7 @@ Responsiveness knobs:
 - Rapid presses are coalesced for `0.20s` before Hammerspoon touches Zoom or Teams, so a quick double tap usually becomes one final desired state instead of two app commands.
 - After any app mute command, Hammerspoon waits `0.90s` before trusting the app's reported mic state. This avoids being fooled by Zoom's briefly stale menu state.
 - The controller observes the app state twice before declaring it stable, and sends a new command only if the settled app state still disagrees with the LED.
+- For safety, Hammerspoon sends at most one app command for each LED-state version. If Zoom or Teams does not confirm that command, Hammerspoon shows an `app did not confirm` alert instead of repeating the command.
 - Status alerts replace the previous alert and last `0.6s`, so the toast should never feel like a cooldown.
 - Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged.
 - Firmware avoids heartbeat spam during normal operation.
