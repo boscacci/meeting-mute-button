@@ -55,21 +55,28 @@ The installed `~/.hammerspoon/init.lua` should load the repo config:
 dofile("/Users/rob/repos/mute-button/hammerspoon/init.lua")
 ```
 
-Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, activates Microsoft Teams, and leaves Teams focused.
+Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, then picks the first running meeting app in priority order:
+
+1. Zoom
+2. Microsoft Teams
+
+This is intentionally pragmatic: Zoom is rarely open unless it is the real call, so Zoom wins when both apps are running. A future Google Meet handler should fit between Zoom and Teams by detecting an active Meet browser tab.
 
 State is intentionally one-way:
 
-- `muted` means red LED, onboard LED off, and Teams should be muted.
-- `unmuted` means green LED, onboard LED on, and Teams should be live.
+- `muted` means red LED, onboard LED off, and the meeting app should be muted.
+- `unmuted` means green LED, onboard LED on, and the meeting app should be live.
 
 Hammerspoon uses Accessibility to find and read Teams' in-call mic button. Teams currently exposes that control deep in the Accessibility tree, so the search depth is intentionally `24`. `Mute mic` means Teams is currently unmuted; `Unmute mic` means Teams is currently muted. If Teams already matches the ESP32/LED state, Hammerspoon does nothing.
 
 Teams' WebView can report a successful Accessibility press without changing call state, so Hammerspoon uses Accessibility only to locate/read the button, then sends a mouse-level click at the button center when a state change is needed. There is no keyboard shortcut fallback; `Command+Shift+M` can leak into Terminal and open man-page windows.
 
+Zoom is cleaner: Hammerspoon reads Zoom's `Meeting` menu and presses the `Mute audio` / `Unmute audio` menu item only when it does not match the ESP32/LED state. It does not inspect meeting tiles or participant text.
+
 Responsiveness knobs:
 
 - Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
-- Hammerspoon waits `0.15s` after activating Teams, then acts only after Teams is confirmed frontmost.
+- Hammerspoon waits `0.15s` after activating the selected meeting app, then acts only after that app is confirmed frontmost.
 - Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged.
 - Firmware avoids heartbeat spam during normal operation.
 

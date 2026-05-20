@@ -30,6 +30,7 @@ def test_keyboard_shortcut_fallback_stays_disabled():
     assert "sendKeyboardShortcut" not in config
     assert "hs.eventtap.keyStroke" not in config
     assert '"cmd", "shift"' not in config
+    assert "Command+Shift+A" not in config
 
 
 def test_hammerspoon_accessibility_helpers_are_consolidated():
@@ -60,6 +61,30 @@ def test_teams_mic_click_respects_led_target_state():
     assert "Teams mic already matches LED state; no click needed; state=" in config
 
 
+def test_zoom_is_prioritized_before_teams_when_running():
+    config = CONFIG.read_text()
+
+    assert "local meetingAppTargets = {" in config
+    assert 'name = "Zoom"' in config
+    assert 'name = "Teams"' in config
+    assert config.index('name = "Zoom"') < config.index('name = "Teams"')
+    assert "local target, app = findMeetingAppTarget()" in config
+    assert "target.handle(app, muteState)" in config
+
+
+def test_zoom_mic_toggle_uses_accessibility_menu_item_not_keyboard_shortcut():
+    config = CONFIG.read_text()
+
+    assert "local zoomBundleIds = {" in config
+    assert '"us.zoom.xos"' in config
+    assert "local function findZoomAudioMenuItem(zoom)" in config
+    assert 'return "muted"' in config
+    assert 'return "unmuted"' in config
+    assert "performAction(\"AXPress\")" in config
+    assert "Zoom audio already matches LED state; no press needed; state=" in config
+    assert "Command+Shift+A" not in config
+
+
 def test_teams_mic_toggle_uses_mouse_click_for_webview_button():
     config = CONFIG.read_text()
 
@@ -76,6 +101,15 @@ def test_hammerspoon_rejects_unknown_state_and_has_no_manual_toggle_path():
     assert "if not muteStates[muteState] then" in config
     assert "Ignored unknown mute state:" in config
     assert "hs.hotkey.bind" not in config
+
+
+def test_hammerspoon_closes_stale_serial_objects_after_reload():
+    config = CONFIG.read_text()
+
+    assert "_G.muteButtonConfigGeneration" in config
+    assert "_G.muteButtonSerialPort" in config
+    assert 'closeSerialPortObject(_G.muteButtonSerialPort, "config reload cleanup")' in config
+    assert "configGeneration == _G.muteButtonConfigGeneration" in config
 
 
 def test_firmware_mute_state_mapping_is_led_color_source_of_truth():

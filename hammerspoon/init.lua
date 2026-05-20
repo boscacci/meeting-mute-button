@@ -3,8 +3,11 @@ local logPath = repoRoot .. "/hammerspoon-debug.log"
 local debugHeartbeats = false
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
-local teamsActivationDelaySeconds = 0.15
+local meetingActivationDelaySeconds = 0.15
 local maxAccessibilitySearchDepth = 24
+local zoomBundleIds = {
+  "us.zoom.xos",
+}
 local teamsBundleIds = {
   "com.microsoft.teams2",
   "com.microsoft.teams",
@@ -14,6 +17,8 @@ local serialPort = nil
 local serialBuffer = ""
 local lastToggleAt = 0
 local serialReconnectGeneration = 0
+_G.muteButtonConfigGeneration = (_G.muteButtonConfigGeneration or 0) + 1
+local configGeneration = _G.muteButtonConfigGeneration
 local muteStates = {
   muted = { name = "muted", ledColor = "red", alert = "Mic is muted" },
   unmuted = { name = "unmuted", ledColor = "green", alert = "Mic is hot!" },
@@ -53,24 +58,58 @@ if hs.ipc then
   log("IPC CLI installed")
 end
 
-local function findTeams()
-  for _, bundleId in ipairs(teamsBundleIds) do
+local function closeSerialPortObject(port, reason)
+  if not port then
+    return
+  end
+
+  log("Closing serial port: " .. tostring(reason))
+  pcall(function()
+    port:callback(nil)
+  end)
+  pcall(function()
+    if port:isOpen() then
+      port:close()
+    end
+  end)
+end
+
+if _G.muteButtonSerialPort then
+  closeSerialPortObject(_G.muteButtonSerialPort, "config reload cleanup")
+  _G.muteButtonSerialPort = nil
+end
+
+local function findRunningApp(bundleIds, label)
+  for _, bundleId in ipairs(bundleIds) do
     local app = hs.application.get(bundleId)
     if app then
-      log("Found Teams app bundle=" .. bundleId .. " name=" .. tostring(app:name()))
+      log("Found " .. label .. " app bundle=" .. bundleId .. " name=" .. tostring(app:name()))
       return app
     end
   end
-  log("Teams app not found")
+  log(label .. " app not found")
   return nil
 end
 
+local function findZoom()
+  return findRunningApp(zoomBundleIds, "Zoom")
+end
+
+local function findTeams()
+  return findRunningApp(teamsBundleIds, "Teams")
+end
+
 local function stateFor(muteState)
-  return muteStates[muteState] or { name = tostring(muteState), ledColor = "unknown", alert = "Teams mute toggled" }
+  return muteStates[muteState] or { name = tostring(muteState), ledColor = "unknown", alert = "Meeting mute toggled" }
 end
 
 local function alertForMuteState(muteState)
   return stateFor(muteState).alert
+end
+
+local function alertForUnavailableMeetingMicControl(appName, muteState)
+  local state = stateFor(muteState)
+  return state.alert .. " (LED " .. state.ledColor .. "). No " .. appName .. " call mic button found."
 end
 
 local function alertForUnavailableTeamsMicControl(muteState)
@@ -78,9 +117,13 @@ local function alertForUnavailableTeamsMicControl(muteState)
   return state.alert .. " (LED " .. state.ledColor .. "). No call mic button found."
 end
 
-local function isTeamsFrontmost(teams)
+local function alertForUnavailableZoomMicControl(muteState)
+  return alertForUnavailableMeetingMicControl("Zoom", muteState)
+end
+
+local function isAppFrontmost(app)
   local frontmostApp = hs.application.frontmostApplication()
-  return frontmostApp and frontmostApp:bundleID() == teams:bundleID()
+  return frontmostApp and frontmostApp:bundleID() == app:bundleID()
 end
 
 local function attributeValue(element, attribute)
@@ -132,11 +175,51 @@ local function canPress(element)
   return false
 end
 
+local function firstDescendantMatching(element, predicate, depth, seen, maxDepth)
+  if not element or depth > maxDepth then
+    return nil
+  end
+
+  local elementId = tostring(element)
+  if seen[elementId] then
+    return nil
+  end
+  seen[elementId] = true
+
+  if predicate(element) then
+    return element
+  end
+
+  local children = tableAttribute(element, "AXChildren")
+  if not children then
+    return nil
+  end
+
+  for _, child in ipairs(children) do
+    local found = firstDescendantMatching(child, predicate, depth + 1, seen, maxDepth)
+    if found then
+      return found
+    end
+  end
+
+  return nil
+end
+
 local function teamsMicStateFromButtonText(text)
   local lower = text:lower()
   if lower:match("unmute") then
     return "muted"
   elseif lower:match("%f[%a]mute%f[%A]") then
+    return "unmuted"
+  end
+  return nil
+end
+
+local function zoomMicStateFromMenuTitle(title)
+  local lower = title:lower()
+  if lower:match("^unmute audio") then
+    return "muted"
+  elseif lower:match("^mute audio") then
     return "unmuted"
   end
   return nil
@@ -158,6 +241,91 @@ local function clickElementCenter(element)
   hs.eventtap.leftClick(clickPoint)
   hs.mouse.absolutePosition(previousMousePosition)
   return true
+end
+
+local function findZoomAudioMenuItem(zoom)
+  local appElement = hs.axuielement.applicationElement(zoom)
+  if not appElement then
+    log("Could not get Zoom accessibility root")
+    return nil
+  end
+
+  local menuBar = firstDescendantMatching(appElement, function(element)
+    return stringAttribute(element, "AXRole") == "AXMenuBar"
+  end, 0, {}, 4)
+  if not menuBar then
+    log("No Zoom menu bar found through accessibility")
+    return nil
+  end
+
+  local meetingMenu = firstDescendantMatching(menuBar, function(element)
+    return stringAttribute(element, "AXRole") == "AXMenuBarItem" and stringAttribute(element, "AXTitle") == "Meeting"
+  end, 0, {}, 4)
+  if not meetingMenu then
+    log("No Zoom Meeting menu found through accessibility")
+    return nil
+  end
+
+  return firstDescendantMatching(meetingMenu, function(element)
+    local title = stringAttribute(element, "AXTitle")
+    return stringAttribute(element, "AXRole") == "AXMenuItem"
+      and canPress(element)
+      and zoomMicStateFromMenuTitle(title) ~= nil
+  end, 0, {}, 6)
+end
+
+local function handleZoomMicState(zoom, targetMuteState)
+  local menuItem = findZoomAudioMenuItem(zoom)
+  if not menuItem then
+    log("No Zoom mute/unmute audio menu item found")
+    return false
+  end
+
+  local title = stringAttribute(menuItem, "AXTitle")
+  local currentZoomMicState = zoomMicStateFromMenuTitle(title)
+  if muteStates[targetMuteState] and currentZoomMicState == targetMuteState then
+    log("Zoom audio already matches LED state; no press needed; state=" .. targetMuteState .. " menu item=" .. title)
+    return true
+  end
+
+  if muteStates[targetMuteState] and not currentZoomMicState then
+    log("Zoom audio menu item found, but state could not be inferred; menu item=" .. title)
+    return false
+  end
+
+  log("Pressing Zoom audio menu item: " .. title .. " target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentZoomMicState))
+  local ok, result = pcall(function()
+    return menuItem:performAction("AXPress")
+  end)
+  local pressed = ok and result ~= false
+  log("Zoom audio AXPress result=" .. tostring(pressed))
+  return pressed
+end
+
+local function handleZoomWhenFrontmost(zoom, muteState, attempt)
+  attempt = attempt or 1
+
+  if isAppFrontmost(zoom) then
+    if handleZoomMicState(zoom, muteState) then
+      log("Zoom mic state handled through accessibility")
+    else
+      log("Zoom is frontmost; no safe mic action available; target state=" .. tostring(muteState))
+      hs.alert.show(alertForUnavailableZoomMicControl(muteState))
+      return
+    end
+    hs.alert.show(alertForMuteState(muteState))
+    return
+  end
+
+  if attempt >= 20 then
+    log("Zoom did not become frontmost; skipped mic update")
+    hs.alert.show("Zoom did not focus")
+    return
+  end
+
+  hs.timer.doAfter(0.05, function()
+    handleZoomWhenFrontmost(zoom, muteState, attempt + 1)
+  end)
 end
 
 local function findMicButton(element, depth, seen)
@@ -233,7 +401,7 @@ end
 local function handleTeamsWhenFrontmost(teams, muteState, attempt)
   attempt = attempt or 1
 
-  if isTeamsFrontmost(teams) then
+  if isAppFrontmost(teams) then
     if handleTeamsMicState(teams, muteState) then
       log("Teams mic state handled through accessibility")
     else
@@ -256,7 +424,41 @@ local function handleTeamsWhenFrontmost(teams, muteState, attempt)
   end)
 end
 
-local function toggleTeamsMute(muteState)
+local function handleZoomTarget(zoom, muteState)
+  log("Activating Zoom before mic update; target state=" .. tostring(muteState))
+  zoom:activate(true)
+  hs.timer.doAfter(meetingActivationDelaySeconds, function()
+    handleZoomWhenFrontmost(zoom, muteState)
+  end)
+end
+
+local function handleTeamsTarget(teams, muteState)
+  log("Activating Teams before mic update; target state=" .. tostring(muteState))
+  teams:activate(true)
+  hs.timer.doAfter(meetingActivationDelaySeconds, function()
+    handleTeamsWhenFrontmost(teams, muteState)
+  end)
+end
+
+-- Priority is intentionally pragmatic: Google Meet can fit here later by
+-- detecting a browser tab before Teams, but Zoom wins today when it is open.
+local meetingAppTargets = {
+  { name = "Zoom", find = findZoom, handle = handleZoomTarget },
+  { name = "Teams", find = findTeams, handle = handleTeamsTarget },
+}
+
+local function findMeetingAppTarget()
+  for _, target in ipairs(meetingAppTargets) do
+    local app = target.find()
+    if app then
+      log("Selected meeting app target=" .. target.name)
+      return target, app
+    end
+  end
+  return nil, nil
+end
+
+local function toggleMeetingMute(muteState)
   if not muteStates[muteState] then
     log("Ignored unknown mute state: " .. tostring(muteState))
     return
@@ -269,20 +471,17 @@ local function toggleTeamsMute(muteState)
   end
   lastToggleAt = now
 
-  local teams = findTeams()
-  if not teams then
-    hs.alert.show("Teams is not running")
+  local target, app = findMeetingAppTarget()
+  if not target then
+    hs.alert.show("No supported meeting app is running")
     return
   end
 
-  log("Activating Teams before mic update; target state=" .. tostring(muteState))
-  teams:activate(true)
-  hs.timer.doAfter(teamsActivationDelaySeconds, function()
-    handleTeamsWhenFrontmost(teams, muteState)
-  end)
+  target.handle(app, muteState)
 end
 
-_G.toggleTeamsMuteFromArduinoButton = toggleTeamsMute
+_G.toggleMeetingMuteFromArduinoButton = toggleMeetingMute
+_G.toggleTeamsMuteFromArduinoButton = toggleMeetingMute
 
 local function handleSerialLine(line)
   if not debugHeartbeats and line:match("^heartbeat ") then
@@ -290,7 +489,7 @@ local function handleSerialLine(line)
   end
   log("Serial line: " .. line)
   if line:match("^pressed%-toggle") then
-    toggleTeamsMute(line:match("state=(%w+)"))
+    toggleMeetingMute(line:match("state=(%w+)"))
   end
 end
 
@@ -311,15 +510,10 @@ local function closeSerialPort(reason)
     return
   end
 
-  log("Closing serial port: " .. tostring(reason))
-  pcall(function()
-    serialPort:callback(nil)
-  end)
-  pcall(function()
-    if serialPort:isOpen() then
-      serialPort:close()
-    end
-  end)
+  closeSerialPortObject(serialPort, reason)
+  if _G.muteButtonSerialPort == serialPort then
+    _G.muteButtonSerialPort = nil
+  end
   serialPort = nil
   serialBuffer = ""
 end
@@ -330,7 +524,7 @@ local function scheduleSerialOpen(delaySeconds)
   serialReconnectGeneration = serialReconnectGeneration + 1
   local generation = serialReconnectGeneration
   hs.timer.doAfter(delaySeconds, function()
-    if generation == serialReconnectGeneration then
+    if generation == serialReconnectGeneration and configGeneration == _G.muteButtonConfigGeneration then
       openSerialPort()
     else
       log("Skipped stale serial reconnect generation=" .. tostring(generation))
@@ -354,10 +548,15 @@ openSerialPort = function()
     return
   end
 
+  _G.muteButtonSerialPort = serialPort
   serialPort:baudRate(serialBaudRate)
   serialPort:dtr(false)
   serialPort:rts(false)
   serialPort:callback(function(_, callbackType, message)
+    if configGeneration ~= _G.muteButtonConfigGeneration then
+      return
+    end
+
     if callbackType == "received" then
       handleSerialData(message)
     elseif callbackType == "removed" or callbackType == "closed" then
@@ -379,6 +578,7 @@ openSerialPort = function()
     hs.alert.show("Arduino mute button connected")
   else
     log("Could not open Arduino serial port")
+    closeSerialPort("open failed")
     hs.alert.show("Could not open Arduino serial port")
   end
 end
