@@ -2,6 +2,8 @@ local repoRoot = "/Users/rob/repos/mute-button"
 local logPath = repoRoot .. "/hammerspoon-debug.log"
 local debugHeartbeats = false
 local alertDurationSeconds = 0.6
+local reconciliationIntervalSeconds = 0.25
+local maxReconciliationAttempts = 24
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
 local meetingActivationDelaySeconds = 0.15
@@ -17,7 +19,8 @@ local teamsBundleIds = {
 
 local serialPort = nil
 local serialBuffer = ""
-local meetingRequestGeneration = 0
+local desiredMuteState = nil
+local reconciliationGeneration = 0
 local serialReconnectGeneration = 0
 _G.muteButtonConfigGeneration = (_G.muteButtonConfigGeneration or 0) + 1
 local configGeneration = _G.muteButtonConfigGeneration
@@ -135,7 +138,7 @@ local function isAppFrontmost(app)
 end
 
 local function isLatestMeetingRequest(requestGeneration)
-  if requestGeneration == meetingRequestGeneration then
+  if requestGeneration == reconciliationGeneration then
     return true
   end
   log("Skipped stale meeting update generation=" .. tostring(requestGeneration))
@@ -268,7 +271,7 @@ local function handleZoomMicState(zoom, targetMuteState)
   return pressed
 end
 
-local function handleZoomWhenFrontmost(zoom, muteState, requestGeneration, attempt)
+local function handleZoomWhenFrontmost(zoom, muteState, requestGeneration, showStatus, attempt)
   attempt = attempt or 1
   if not isLatestMeetingRequest(requestGeneration) then
     return
@@ -279,21 +282,27 @@ local function handleZoomWhenFrontmost(zoom, muteState, requestGeneration, attem
       log("Zoom mic state handled through accessibility")
     else
       log("Zoom is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-      showAlert(alertForUnavailableZoomMicControl(muteState))
+      if showStatus then
+        showAlert(alertForUnavailableZoomMicControl(muteState))
+      end
       return
     end
-    showAlert(alertForMuteState(muteState))
+    if showStatus then
+      showAlert(alertForMuteState(muteState))
+    end
     return
   end
 
   if attempt >= 20 then
     log("Zoom did not become frontmost; skipped mic update")
-    showAlert("Zoom did not focus")
+    if showStatus then
+      showAlert("Zoom did not focus")
+    end
     return
   end
 
   hs.timer.doAfter(0.05, function()
-    handleZoomWhenFrontmost(zoom, muteState, requestGeneration, attempt + 1)
+    handleZoomWhenFrontmost(zoom, muteState, requestGeneration, showStatus, attempt + 1)
   end)
 end
 
@@ -367,7 +376,7 @@ local function handleTeamsMicState(teams, targetMuteState)
   return clicked
 end
 
-local function handleTeamsWhenFrontmost(teams, muteState, requestGeneration, attempt)
+local function handleTeamsWhenFrontmost(teams, muteState, requestGeneration, showStatus, attempt)
   attempt = attempt or 1
   if not isLatestMeetingRequest(requestGeneration) then
     return
@@ -378,25 +387,31 @@ local function handleTeamsWhenFrontmost(teams, muteState, requestGeneration, att
       log("Teams mic state handled through accessibility")
     else
       log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-      showAlert(alertForUnavailableTeamsMicControl(muteState))
+      if showStatus then
+        showAlert(alertForUnavailableTeamsMicControl(muteState))
+      end
       return
     end
-    showAlert(alertForMuteState(muteState))
+    if showStatus then
+      showAlert(alertForMuteState(muteState))
+    end
     return
   end
 
   if attempt >= 20 then
     log("Teams did not become frontmost; skipped mic update")
-    showAlert("Teams did not focus")
+    if showStatus then
+      showAlert("Teams did not focus")
+    end
     return
   end
 
   hs.timer.doAfter(0.05, function()
-    handleTeamsWhenFrontmost(teams, muteState, requestGeneration, attempt + 1)
+    handleTeamsWhenFrontmost(teams, muteState, requestGeneration, showStatus, attempt + 1)
   end)
 end
 
-local function handleZoomTarget(zoom, muteState, requestGeneration)
+local function handleZoomTarget(zoom, muteState, requestGeneration, showStatus)
   if not isLatestMeetingRequest(requestGeneration) then
     return
   end
@@ -406,7 +421,7 @@ local function handleZoomTarget(zoom, muteState, requestGeneration)
     log("Zoom audio menu is settling; queued target state=" .. tostring(muteState) .. " wait=" .. string.format("%.2f", settleRemaining))
     hs.timer.doAfter(settleRemaining, function()
       if isLatestMeetingRequest(requestGeneration) then
-        handleZoomTarget(zoom, muteState, requestGeneration)
+        handleZoomTarget(zoom, muteState, requestGeneration, showStatus)
       end
     end)
     return
@@ -416,12 +431,12 @@ local function handleZoomTarget(zoom, muteState, requestGeneration)
   zoom:activate(true)
   hs.timer.doAfter(meetingActivationDelaySeconds, function()
     if isLatestMeetingRequest(requestGeneration) then
-      handleZoomWhenFrontmost(zoom, muteState, requestGeneration)
+      handleZoomWhenFrontmost(zoom, muteState, requestGeneration, showStatus)
     end
   end)
 end
 
-local function handleTeamsTarget(teams, muteState, requestGeneration)
+local function handleTeamsTarget(teams, muteState, requestGeneration, showStatus)
   if not isLatestMeetingRequest(requestGeneration) then
     return
   end
@@ -430,7 +445,7 @@ local function handleTeamsTarget(teams, muteState, requestGeneration)
   teams:activate(true)
   hs.timer.doAfter(meetingActivationDelaySeconds, function()
     if isLatestMeetingRequest(requestGeneration) then
-      handleTeamsWhenFrontmost(teams, muteState, requestGeneration)
+      handleTeamsWhenFrontmost(teams, muteState, requestGeneration, showStatus)
     end
   end)
 end
@@ -453,22 +468,61 @@ local function findMeetingAppTarget()
   return nil, nil
 end
 
-local function toggleMeetingMute(muteState)
+local runMeetingReconciliation
+
+local function scheduleMeetingReconciliation(requestGeneration, attempt, delaySeconds)
+  hs.timer.doAfter(delaySeconds, function()
+    if isLatestMeetingRequest(requestGeneration) then
+      runMeetingReconciliation(requestGeneration, attempt)
+    end
+  end)
+end
+
+runMeetingReconciliation = function(requestGeneration, attempt)
+  if not isLatestMeetingRequest(requestGeneration) then
+    return
+  end
+
+  local targetMuteState = desiredMuteState
+  if not muteStates[targetMuteState] then
+    log("No valid desired mute state to reconcile: " .. tostring(targetMuteState))
+    return
+  end
+
+  local target, app = findMeetingAppTarget()
+  if not target then
+    if attempt == 1 then
+      showAlert("No supported meeting app is running")
+    end
+  else
+    log("Reconciliation attempt=" .. tostring(attempt) .. " target=" .. target.name .. " desired LED state=" .. targetMuteState)
+    target.handle(app, targetMuteState, requestGeneration, attempt == 1)
+    log("Reconciliation attempted for desired LED state; continuing verification")
+  end
+
+  if attempt >= maxReconciliationAttempts then
+    log("Reconciliation window ended for desired LED state=" .. tostring(desiredMuteState))
+    return
+  end
+
+  scheduleMeetingReconciliation(requestGeneration, attempt + 1, reconciliationIntervalSeconds)
+end
+
+local function requestMeetingReconciliation(muteState, reason)
   if not muteStates[muteState] then
     log("Ignored unknown mute state: " .. tostring(muteState))
     return
   end
 
-  meetingRequestGeneration = meetingRequestGeneration + 1
-  local requestGeneration = meetingRequestGeneration
+  desiredMuteState = muteState
+  reconciliationGeneration = reconciliationGeneration + 1
+  local requestGeneration = reconciliationGeneration
+  log("Requested meeting reconciliation reason=" .. tostring(reason) .. " desired LED state=" .. muteState)
+  runMeetingReconciliation(requestGeneration, 1)
+end
 
-  local target, app = findMeetingAppTarget()
-  if not target then
-    showAlert("No supported meeting app is running")
-    return
-  end
-
-  target.handle(app, muteState, requestGeneration)
+local function toggleMeetingMute(muteState)
+  requestMeetingReconciliation(muteState, "serial-toggle")
 end
 
 _G.toggleMeetingMuteFromArduinoButton = toggleMeetingMute

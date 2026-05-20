@@ -69,7 +69,7 @@ def test_zoom_is_prioritized_before_teams_when_running():
     assert 'name = "Teams"' in config
     assert config.index('name = "Zoom"') < config.index('name = "Teams"')
     assert "local target, app = findMeetingAppTarget()" in config
-    assert "target.handle(app, muteState, requestGeneration)" in config
+    assert "target.handle(app, targetMuteState, requestGeneration, attempt == 1)" in config
 
 
 def test_zoom_mic_toggle_uses_accessibility_menu_item_not_keyboard_shortcut():
@@ -91,9 +91,22 @@ def test_hammerspoon_accepts_rapid_meeting_state_changes():
 
     assert "lastToggleAt" not in config
     assert "Ignored duplicate toggle inside debounce window" not in config
-    assert "meetingRequestGeneration = meetingRequestGeneration + 1" in config
-    assert "requestGeneration == meetingRequestGeneration" in config
+    assert "reconciliationGeneration = reconciliationGeneration + 1" in config
+    assert "requestGeneration == reconciliationGeneration" in config
     assert "Skipped stale meeting update generation=" in config
+
+
+def test_hammerspoon_reconciles_latest_led_state_retroactively():
+    config = CONFIG.read_text()
+
+    assert "local desiredMuteState = nil" in config
+    assert "local reconciliationIntervalSeconds = 0.25" in config
+    assert "local maxReconciliationAttempts = 24" in config
+    assert "local function requestMeetingReconciliation(muteState, reason)" in config
+    assert "desiredMuteState = muteState" in config
+    assert "runMeetingReconciliation(requestGeneration, 1)" in config
+    assert "scheduleMeetingReconciliation(requestGeneration, attempt + 1, reconciliationIntervalSeconds)" in config
+    assert "Reconciliation attempted for desired LED state; continuing verification" in config
 
 
 def test_zoom_queues_latest_state_while_audio_menu_settles():

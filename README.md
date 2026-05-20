@@ -77,6 +77,7 @@ Responsiveness knobs:
 
 - Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
 - Hammerspoon accepts every firmware-reported button press; there is no extra duplicate-drop window on the Mac side.
+- Hammerspoon stores the latest LED state as `desiredMuteState` and runs a reconciliation loop for about `6s` after each press.
 - Hammerspoon waits `0.15s` after activating the selected meeting app, then acts only after that app is confirmed frontmost.
 - Zoom gets a `0.45s` post-press settle window so rapid presses coalesce to the newest LED state instead of reading a stale Zoom menu item.
 - Status alerts replace the previous alert and last `0.6s`, so the toast should never feel like a cooldown.
