@@ -20,7 +20,7 @@ def test_unavailable_teams_mic_control_alert_reports_led_state():
     assert "local function alertForUnavailableTeamsMicControl(muteState)" in config
     assert "local state = stateFor(muteState)" in config
     assert 'return state.alert .. " (LED " .. state.ledColor .. "). No call mic button found."' in config
-    assert "showAlert(alertForUnavailableTeamsMicControl(muteState))" in config
+    assert "showAlert(target.unavailableAlert(targetMuteState))" in config
     assert 'hs.alert.show("Teams focused; mic button not found")' not in config
 
 
@@ -56,9 +56,10 @@ def test_teams_mic_click_respects_led_target_state():
     assert "local function teamsMicStateFromButtonText(text)" in config
     assert 'return "muted"' in config
     assert 'return "unmuted"' in config
-    assert "handleTeamsMicState(teams, muteState, actionAllowed)" in config
-    assert "currentTeamsMicState == targetMuteState" in config
-    assert "Teams mic already matches LED state; no click needed; state=" in config
+    assert "local function readTeamsMicState(teams)" in config
+    assert "local function applyTeamsMicState(_, observation, targetMuteState)" in config
+    assert "observation.state == targetMuteState" in config
+    assert "Mouse-clicking Teams mic button:" in config
 
 
 def test_zoom_is_prioritized_before_teams_when_running():
@@ -69,7 +70,8 @@ def test_zoom_is_prioritized_before_teams_when_running():
     assert 'name = "Teams"' in config
     assert config.index('name = "Zoom"') < config.index('name = "Teams"')
     assert "local target, app = findMeetingAppTarget()" in config
-    assert "target.handle(app, targetMuteState, requestGeneration, attempt == 1)" in config
+    assert "read = readZoomMicState" in config
+    assert "apply = applyZoomMicState" in config
 
 
 def test_zoom_mic_toggle_uses_accessibility_menu_item_not_keyboard_shortcut():
@@ -79,10 +81,11 @@ def test_zoom_mic_toggle_uses_accessibility_menu_item_not_keyboard_shortcut():
     assert '"us.zoom.xos"' in config
     assert "local function zoomAudioMenuTitle(zoom)" in config
     assert 'zoom:findMenuItem({ "Meeting", "Unmute audio" })' in config
-    assert 'zoom:selectMenuItem({ "Meeting", title })' in config
+    assert 'zoom:selectMenuItem({ "Meeting", observation.control })' in config
     assert 'return "muted"' in config
     assert 'return "unmuted"' in config
-    assert "Zoom audio already matches LED state; no press needed; state=" in config
+    assert "local function readZoomMicState(zoom)" in config
+    assert "local function applyZoomMicState(zoom, observation, targetMuteState)" in config
     assert "Command+Shift+A" not in config
 
 
@@ -91,34 +94,32 @@ def test_hammerspoon_accepts_rapid_meeting_state_changes():
 
     assert "lastToggleAt" not in config
     assert "Ignored duplicate toggle inside debounce window" not in config
-    assert "reconciliationGeneration = reconciliationGeneration + 1" in config
-    assert "requestGeneration == reconciliationGeneration" in config
-    assert "Skipped stale meeting update generation=" in config
+    assert "desiredStateVersion = desiredStateVersion + 1" in config
+    assert "scheduledVersion ~= desiredStateVersion" in config
+    assert "Skipped stale meeting controller version=" in config
 
 
 def test_hammerspoon_reconciles_latest_led_state_retroactively():
     config = CONFIG.read_text()
 
     assert "local desiredMuteState = nil" in config
-    assert "local reconciliationIntervalSeconds = 0.25" in config
-    assert "local maxReconciliationAttempts = 24" in config
+    assert "local controllerIntervalSeconds = 0.20" in config
+    assert "local maxControllerAttempts = 30" in config
     assert "local function requestMeetingReconciliation(muteState, reason)" in config
     assert "desiredMuteState = muteState" in config
-    assert "runMeetingReconciliation(requestGeneration, 1)" in config
-    assert "scheduleMeetingReconciliation(requestGeneration, attempt + 1, reconciliationIntervalSeconds)" in config
-    assert "Reconciliation attempted for desired LED state; status=" in config
+    assert 'scheduleMeetingController(inputCoalesceDelaySeconds, "input-coalesce")' in config
+    assert "retryMeetingController(controllerIntervalSeconds" in config
+    assert "Observed meeting mic state target=" in config
 
 
 def test_reconciliation_loop_is_single_flight_not_nested_timers():
     config = CONFIG.read_text()
 
-    assert 'local reconciliationResult = "pending"' in config
-    assert "reconciliationResult = target.handle(app, targetMuteState, requestGeneration, attempt == 1)" in config
-    assert 'return "pending"' in config
-    assert 'return "acted"' in config
-    assert 'return "matched"' in config
-    assert "actionReconciliationGeneration ~= requestGeneration" in config
-    assert "not pressing again for this button state" in config
+    assert "local runMeetingController" in config
+    assert "local pendingControllerTimer = nil" in config
+    assert "stopPendingControllerTimer(\"reschedule \" .. tostring(reason))" in config
+    assert "lastMeetingCommand = {" in config
+    assert "local applied = target.apply(app, observation, targetMuteState)" in config
     assert "handleZoomWhenFrontmost" not in config
     assert "handleTeamsWhenFrontmost" not in config
     assert "meetingActivationDelaySeconds" not in config
@@ -134,17 +135,41 @@ def test_reconciliation_stops_after_stable_matches_to_avoid_toggle_loops():
     assert "stableReconciliationMatches >= requiredStableMatches" in config
     assert "Reconciliation stable; desired LED state matches meeting app" in config
     assert "stableReconciliationMatches = 0" in config
-    assert "Reconciliation attempted for desired LED state; status=" in config
+    assert "Observed meeting mic state target=" in config
     assert "continuing verification" not in config
+
+
+def test_hammerspoon_coalesces_rapid_button_presses_before_meeting_action():
+    config = CONFIG.read_text()
+
+    assert "local inputCoalesceDelaySeconds = 0.20" in config
+    assert "local pendingControllerTimer = nil" in config
+    assert "local function stopPendingControllerTimer(reason)" in config
+    assert "local function scheduleMeetingController(delaySeconds, reason)" in config
+    assert 'scheduleMeetingController(inputCoalesceDelaySeconds, "input-coalesce")' in config
+    assert "runMeetingReconciliation(requestGeneration, 1)" not in config
+    assert "target.handle(app, targetMuteState, requestGeneration, attempt == 1)" not in config
+
+
+def test_hammerspoon_waits_for_in_flight_commands_before_trusting_app_state():
+    config = CONFIG.read_text()
+
+    assert "local commandSettleSeconds = 0.90" in config
+    assert "local lastMeetingCommand = nil" in config
+    assert "local function meetingCommandSettleRemaining()" in config
+    assert "Meeting command is settling; ignoring app state until quiet window" in config
+    assert "lastMeetingCommand = {" in config
+    assert "version = desiredStateVersion" in config
+    assert 'scheduleMeetingController(remaining, "command-settle")' in config
 
 
 def test_zoom_queues_latest_state_while_audio_menu_settles():
     config = CONFIG.read_text()
 
-    assert "local zoomPostPressSettleSeconds" in config
-    assert "local zoomLastPressAt = 0" in config
-    assert "Zoom audio menu is settling; queued target state=" in config
-    assert "zoomLastPressAt = hs.timer.secondsSinceEpoch()" in config
+    assert "local commandSettleSeconds = 0.90" in config
+    assert "local lastMeetingCommand = nil" in config
+    assert "Meeting command is settling; ignoring app state until quiet window" in config
+    assert "sentAt = hs.timer.secondsSinceEpoch()" in config
 
 
 def test_status_alerts_are_short_and_replaced_for_rapid_feedback():

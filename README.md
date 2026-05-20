@@ -77,9 +77,10 @@ Responsiveness knobs:
 
 - Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
 - Hammerspoon accepts every firmware-reported button press; there is no extra duplicate-drop window on the Mac side.
-- Hammerspoon stores the latest LED state as `desiredMuteState` and runs a reconciliation loop for about `6s` after each press.
-- The reconciliation loop is single-flight: one timer owns retries, so rapid presses cannot stack overlapping Zoom commands.
-- Zoom gets a `0.45s` post-press settle window so rapid presses coalesce to the newest LED state instead of reading a stale Zoom menu item.
+- Hammerspoon stores the latest LED state as `desiredMuteState`; that state is the source of truth.
+- Rapid presses are coalesced for `0.20s` before Hammerspoon touches Zoom or Teams, so a quick double tap usually becomes one final desired state instead of two app commands.
+- After any app mute command, Hammerspoon waits `0.90s` before trusting the app's reported mic state. This avoids being fooled by Zoom's briefly stale menu state.
+- The controller observes the app state twice before declaring it stable, and sends a new command only if the settled app state still disagrees with the LED.
 - Status alerts replace the previous alert and last `0.6s`, so the toast should never feel like a cooldown.
 - Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged.
 - Firmware avoids heartbeat spam during normal operation.
