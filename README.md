@@ -1,6 +1,6 @@
 # Mute Button
 
-ESP32 hardware mute button for Microsoft Teams on macOS.
+ESP32 hardware mute button for Zoom and Microsoft Teams on macOS.
 
 ```text
       .----------------.
@@ -71,12 +71,15 @@ Hammerspoon uses Accessibility to find and read Teams' in-call mic button. Teams
 
 Teams' WebView can report a successful Accessibility press without changing call state, so Hammerspoon uses Accessibility only to locate/read the button, then sends a mouse-level click at the button center when a state change is needed. There is no keyboard shortcut fallback; `Command+Shift+M` can leak into Terminal and open man-page windows.
 
-Zoom is cleaner: Hammerspoon reads Zoom's `Meeting` menu and presses the `Mute audio` / `Unmute audio` menu item only when it does not match the ESP32/LED state. It does not inspect meeting tiles or participant text.
+Zoom is cleaner: Hammerspoon reads Zoom's `Meeting` menu and selects the `Mute audio` / `Unmute audio` menu command only when it does not match the ESP32/LED state. It does not inspect meeting tiles or participant text.
 
 Responsiveness knobs:
 
 - Firmware debounce is `15ms` in `ButtonSerialTest/ButtonSerialTest.ino`.
+- Hammerspoon accepts every firmware-reported button press; there is no extra duplicate-drop window on the Mac side.
 - Hammerspoon waits `0.15s` after activating the selected meeting app, then acts only after that app is confirmed frontmost.
+- Zoom gets a `0.45s` post-press settle window so rapid presses coalesce to the newest LED state instead of reading a stale Zoom menu item.
+- Status alerts replace the previous alert and last `0.6s`, so the toast should never feel like a cooldown.
 - Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged.
 - Firmware avoids heartbeat spam during normal operation.
 

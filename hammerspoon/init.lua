@@ -1,10 +1,12 @@
 local repoRoot = "/Users/rob/repos/mute-button"
 local logPath = repoRoot .. "/hammerspoon-debug.log"
 local debugHeartbeats = false
+local alertDurationSeconds = 0.6
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
 local meetingActivationDelaySeconds = 0.15
 local maxAccessibilitySearchDepth = 24
+local zoomPostPressSettleSeconds = 0.45
 local zoomBundleIds = {
   "us.zoom.xos",
 }
@@ -15,10 +17,11 @@ local teamsBundleIds = {
 
 local serialPort = nil
 local serialBuffer = ""
-local lastToggleAt = 0
+local meetingRequestGeneration = 0
 local serialReconnectGeneration = 0
 _G.muteButtonConfigGeneration = (_G.muteButtonConfigGeneration or 0) + 1
 local configGeneration = _G.muteButtonConfigGeneration
+local zoomLastPressAt = 0
 local muteStates = {
   muted = { name = "muted", ledColor = "red", alert = "Mic is muted" },
   unmuted = { name = "unmuted", ledColor = "green", alert = "Mic is hot!" },
@@ -51,6 +54,11 @@ local function log(message)
     file:close()
   end
   print(line)
+end
+
+local function showAlert(message, seconds)
+  hs.alert.closeAll(0)
+  hs.alert.show(message, nil, nil, seconds or alertDurationSeconds)
 end
 
 if hs.ipc then
@@ -126,6 +134,14 @@ local function isAppFrontmost(app)
   return frontmostApp and frontmostApp:bundleID() == app:bundleID()
 end
 
+local function isLatestMeetingRequest(requestGeneration)
+  if requestGeneration == meetingRequestGeneration then
+    return true
+  end
+  log("Skipped stale meeting update generation=" .. tostring(requestGeneration))
+  return false
+end
+
 local function attributeValue(element, attribute)
   local ok, value = pcall(function()
     return element:attributeValue(attribute)
@@ -175,36 +191,6 @@ local function canPress(element)
   return false
 end
 
-local function firstDescendantMatching(element, predicate, depth, seen, maxDepth)
-  if not element or depth > maxDepth then
-    return nil
-  end
-
-  local elementId = tostring(element)
-  if seen[elementId] then
-    return nil
-  end
-  seen[elementId] = true
-
-  if predicate(element) then
-    return element
-  end
-
-  local children = tableAttribute(element, "AXChildren")
-  if not children then
-    return nil
-  end
-
-  for _, child in ipairs(children) do
-    local found = firstDescendantMatching(child, predicate, depth + 1, seen, maxDepth)
-    if found then
-      return found
-    end
-  end
-
-  return nil
-end
-
 local function teamsMicStateFromButtonText(text)
   local lower = text:lower()
   if lower:match("unmute") then
@@ -243,45 +229,22 @@ local function clickElementCenter(element)
   return true
 end
 
-local function findZoomAudioMenuItem(zoom)
-  local appElement = hs.axuielement.applicationElement(zoom)
-  if not appElement then
-    log("Could not get Zoom accessibility root")
-    return nil
+local function zoomAudioMenuTitle(zoom)
+  if zoom:findMenuItem({ "Meeting", "Unmute audio" }) then
+    return "Unmute audio"
+  elseif zoom:findMenuItem({ "Meeting", "Mute audio" }) then
+    return "Mute audio"
   end
-
-  local menuBar = firstDescendantMatching(appElement, function(element)
-    return stringAttribute(element, "AXRole") == "AXMenuBar"
-  end, 0, {}, 4)
-  if not menuBar then
-    log("No Zoom menu bar found through accessibility")
-    return nil
-  end
-
-  local meetingMenu = firstDescendantMatching(menuBar, function(element)
-    return stringAttribute(element, "AXRole") == "AXMenuBarItem" and stringAttribute(element, "AXTitle") == "Meeting"
-  end, 0, {}, 4)
-  if not meetingMenu then
-    log("No Zoom Meeting menu found through accessibility")
-    return nil
-  end
-
-  return firstDescendantMatching(meetingMenu, function(element)
-    local title = stringAttribute(element, "AXTitle")
-    return stringAttribute(element, "AXRole") == "AXMenuItem"
-      and canPress(element)
-      and zoomMicStateFromMenuTitle(title) ~= nil
-  end, 0, {}, 6)
+  return nil
 end
 
 local function handleZoomMicState(zoom, targetMuteState)
-  local menuItem = findZoomAudioMenuItem(zoom)
-  if not menuItem then
+  local title = zoomAudioMenuTitle(zoom)
+  if not title then
     log("No Zoom mute/unmute audio menu item found")
     return false
   end
 
-  local title = stringAttribute(menuItem, "AXTitle")
   local currentZoomMicState = zoomMicStateFromMenuTitle(title)
   if muteStates[targetMuteState] and currentZoomMicState == targetMuteState then
     log("Zoom audio already matches LED state; no press needed; state=" .. targetMuteState .. " menu item=" .. title)
@@ -294,37 +257,43 @@ local function handleZoomMicState(zoom, targetMuteState)
   end
 
   log("Pressing Zoom audio menu item: " .. title .. " target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentZoomMicState))
-  local ok, result = pcall(function()
-    return menuItem:performAction("AXPress")
+  local ok, selected = pcall(function()
+    return zoom:selectMenuItem({ "Meeting", title })
   end)
-  local pressed = ok and result ~= false
-  log("Zoom audio AXPress result=" .. tostring(pressed))
+  local pressed = ok and selected == true
+  if pressed then
+    zoomLastPressAt = hs.timer.secondsSinceEpoch()
+  end
+  log("Zoom audio selectMenuItem result=" .. tostring(pressed))
   return pressed
 end
 
-local function handleZoomWhenFrontmost(zoom, muteState, attempt)
+local function handleZoomWhenFrontmost(zoom, muteState, requestGeneration, attempt)
   attempt = attempt or 1
+  if not isLatestMeetingRequest(requestGeneration) then
+    return
+  end
 
   if isAppFrontmost(zoom) then
     if handleZoomMicState(zoom, muteState) then
       log("Zoom mic state handled through accessibility")
     else
       log("Zoom is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-      hs.alert.show(alertForUnavailableZoomMicControl(muteState))
+      showAlert(alertForUnavailableZoomMicControl(muteState))
       return
     end
-    hs.alert.show(alertForMuteState(muteState))
+    showAlert(alertForMuteState(muteState))
     return
   end
 
   if attempt >= 20 then
     log("Zoom did not become frontmost; skipped mic update")
-    hs.alert.show("Zoom did not focus")
+    showAlert("Zoom did not focus")
     return
   end
 
   hs.timer.doAfter(0.05, function()
-    handleZoomWhenFrontmost(zoom, muteState, attempt + 1)
+    handleZoomWhenFrontmost(zoom, muteState, requestGeneration, attempt + 1)
   end)
 end
 
@@ -398,45 +367,71 @@ local function handleTeamsMicState(teams, targetMuteState)
   return clicked
 end
 
-local function handleTeamsWhenFrontmost(teams, muteState, attempt)
+local function handleTeamsWhenFrontmost(teams, muteState, requestGeneration, attempt)
   attempt = attempt or 1
+  if not isLatestMeetingRequest(requestGeneration) then
+    return
+  end
 
   if isAppFrontmost(teams) then
     if handleTeamsMicState(teams, muteState) then
       log("Teams mic state handled through accessibility")
     else
       log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-      hs.alert.show(alertForUnavailableTeamsMicControl(muteState))
+      showAlert(alertForUnavailableTeamsMicControl(muteState))
       return
     end
-    hs.alert.show(alertForMuteState(muteState))
+    showAlert(alertForMuteState(muteState))
     return
   end
 
   if attempt >= 20 then
     log("Teams did not become frontmost; skipped mic update")
-    hs.alert.show("Teams did not focus")
+    showAlert("Teams did not focus")
     return
   end
 
   hs.timer.doAfter(0.05, function()
-    handleTeamsWhenFrontmost(teams, muteState, attempt + 1)
+    handleTeamsWhenFrontmost(teams, muteState, requestGeneration, attempt + 1)
   end)
 end
 
-local function handleZoomTarget(zoom, muteState)
+local function handleZoomTarget(zoom, muteState, requestGeneration)
+  if not isLatestMeetingRequest(requestGeneration) then
+    return
+  end
+
+  local settleRemaining = (zoomLastPressAt + zoomPostPressSettleSeconds) - hs.timer.secondsSinceEpoch()
+  if settleRemaining > 0 then
+    log("Zoom audio menu is settling; queued target state=" .. tostring(muteState) .. " wait=" .. string.format("%.2f", settleRemaining))
+    hs.timer.doAfter(settleRemaining, function()
+      if isLatestMeetingRequest(requestGeneration) then
+        handleZoomTarget(zoom, muteState, requestGeneration)
+      end
+    end)
+    return
+  end
+
   log("Activating Zoom before mic update; target state=" .. tostring(muteState))
   zoom:activate(true)
   hs.timer.doAfter(meetingActivationDelaySeconds, function()
-    handleZoomWhenFrontmost(zoom, muteState)
+    if isLatestMeetingRequest(requestGeneration) then
+      handleZoomWhenFrontmost(zoom, muteState, requestGeneration)
+    end
   end)
 end
 
-local function handleTeamsTarget(teams, muteState)
+local function handleTeamsTarget(teams, muteState, requestGeneration)
+  if not isLatestMeetingRequest(requestGeneration) then
+    return
+  end
+
   log("Activating Teams before mic update; target state=" .. tostring(muteState))
   teams:activate(true)
   hs.timer.doAfter(meetingActivationDelaySeconds, function()
-    handleTeamsWhenFrontmost(teams, muteState)
+    if isLatestMeetingRequest(requestGeneration) then
+      handleTeamsWhenFrontmost(teams, muteState, requestGeneration)
+    end
   end)
 end
 
@@ -464,20 +459,16 @@ local function toggleMeetingMute(muteState)
     return
   end
 
-  local now = hs.timer.secondsSinceEpoch()
-  if now - lastToggleAt < 0.4 then
-    log("Ignored duplicate toggle inside debounce window")
-    return
-  end
-  lastToggleAt = now
+  meetingRequestGeneration = meetingRequestGeneration + 1
+  local requestGeneration = meetingRequestGeneration
 
   local target, app = findMeetingAppTarget()
   if not target then
-    hs.alert.show("No supported meeting app is running")
+    showAlert("No supported meeting app is running")
     return
   end
 
-  target.handle(app, muteState)
+  target.handle(app, muteState, requestGeneration)
 end
 
 _G.toggleMeetingMuteFromArduinoButton = toggleMeetingMute
@@ -518,6 +509,10 @@ local function closeSerialPort(reason)
   serialBuffer = ""
 end
 
+hs.shutdownCallback = function()
+  closeSerialPort("shutdown cleanup")
+end
+
 local openSerialPort
 
 local function scheduleSerialOpen(delaySeconds)
@@ -544,7 +539,7 @@ openSerialPort = function()
   serialPort = hs.serial.newFromPath(serialPortPath)
   if not serialPort then
     log("Arduino serial port not found")
-    hs.alert.show("Arduino serial port not found")
+    showAlert("Arduino serial port not found")
     return
   end
 
@@ -563,23 +558,23 @@ openSerialPort = function()
       log("Serial callback: " .. tostring(callbackType))
       closeSerialPort(callbackType)
       scheduleSerialOpen(1)
-      hs.alert.show("Arduino serial disconnected")
+      showAlert("Arduino serial disconnected")
     elseif callbackType == "error" then
       log("Serial callback: " .. tostring(callbackType))
       log("Arduino serial error: " .. tostring(message))
       closeSerialPort("error")
       scheduleSerialOpen(1)
-      hs.alert.show("Arduino serial error: " .. tostring(message))
+      showAlert("Arduino serial error: " .. tostring(message))
     end
   end)
 
   if serialPort:open() then
     log("Arduino serial connected")
-    hs.alert.show("Arduino mute button connected")
+    showAlert("Arduino mute button connected")
   else
     log("Could not open Arduino serial port")
     closeSerialPort("open failed")
-    hs.alert.show("Could not open Arduino serial port")
+    showAlert("Could not open Arduino serial port")
   end
 end
 
@@ -590,5 +585,5 @@ hs.serial.deviceCallback(function()
 end)
 
 scheduleSerialOpen(1)
-hs.alert.show("Mute button config loaded")
+showAlert("Mute button config loaded")
 log("Mute button config loaded")

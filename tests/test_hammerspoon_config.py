@@ -20,7 +20,7 @@ def test_unavailable_teams_mic_control_alert_reports_led_state():
     assert "local function alertForUnavailableTeamsMicControl(muteState)" in config
     assert "local state = stateFor(muteState)" in config
     assert 'return state.alert .. " (LED " .. state.ledColor .. "). No call mic button found."' in config
-    assert "hs.alert.show(alertForUnavailableTeamsMicControl(muteState))" in config
+    assert "showAlert(alertForUnavailableTeamsMicControl(muteState))" in config
     assert 'hs.alert.show("Teams focused; mic button not found")' not in config
 
 
@@ -69,7 +69,7 @@ def test_zoom_is_prioritized_before_teams_when_running():
     assert 'name = "Teams"' in config
     assert config.index('name = "Zoom"') < config.index('name = "Teams"')
     assert "local target, app = findMeetingAppTarget()" in config
-    assert "target.handle(app, muteState)" in config
+    assert "target.handle(app, muteState, requestGeneration)" in config
 
 
 def test_zoom_mic_toggle_uses_accessibility_menu_item_not_keyboard_shortcut():
@@ -77,12 +77,41 @@ def test_zoom_mic_toggle_uses_accessibility_menu_item_not_keyboard_shortcut():
 
     assert "local zoomBundleIds = {" in config
     assert '"us.zoom.xos"' in config
-    assert "local function findZoomAudioMenuItem(zoom)" in config
+    assert "local function zoomAudioMenuTitle(zoom)" in config
+    assert 'zoom:findMenuItem({ "Meeting", "Unmute audio" })' in config
+    assert 'zoom:selectMenuItem({ "Meeting", title })' in config
     assert 'return "muted"' in config
     assert 'return "unmuted"' in config
-    assert "performAction(\"AXPress\")" in config
     assert "Zoom audio already matches LED state; no press needed; state=" in config
     assert "Command+Shift+A" not in config
+
+
+def test_hammerspoon_accepts_rapid_meeting_state_changes():
+    config = CONFIG.read_text()
+
+    assert "lastToggleAt" not in config
+    assert "Ignored duplicate toggle inside debounce window" not in config
+    assert "meetingRequestGeneration = meetingRequestGeneration + 1" in config
+    assert "requestGeneration == meetingRequestGeneration" in config
+    assert "Skipped stale meeting update generation=" in config
+
+
+def test_zoom_queues_latest_state_while_audio_menu_settles():
+    config = CONFIG.read_text()
+
+    assert "local zoomPostPressSettleSeconds" in config
+    assert "local zoomLastPressAt = 0" in config
+    assert "Zoom audio menu is settling; queued target state=" in config
+    assert "zoomLastPressAt = hs.timer.secondsSinceEpoch()" in config
+
+
+def test_status_alerts_are_short_and_replaced_for_rapid_feedback():
+    config = CONFIG.read_text()
+
+    assert "local alertDurationSeconds = 0.6" in config
+    assert "local function showAlert(message, seconds)" in config
+    assert "hs.alert.closeAll(0)" in config
+    assert "hs.alert.show(message, nil, nil, seconds or alertDurationSeconds)" in config
 
 
 def test_teams_mic_toggle_uses_mouse_click_for_webview_button():
@@ -110,6 +139,13 @@ def test_hammerspoon_closes_stale_serial_objects_after_reload():
     assert "_G.muteButtonSerialPort" in config
     assert 'closeSerialPortObject(_G.muteButtonSerialPort, "config reload cleanup")' in config
     assert "configGeneration == _G.muteButtonConfigGeneration" in config
+
+
+def test_hammerspoon_closes_serial_port_before_shutdown_or_reload():
+    config = CONFIG.read_text()
+
+    assert "hs.shutdownCallback = function()" in config
+    assert 'closeSerialPort("shutdown cleanup")' in config
 
 
 def test_firmware_mute_state_mapping_is_led_color_source_of_truth():
