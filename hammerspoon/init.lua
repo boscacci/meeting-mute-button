@@ -4,6 +4,7 @@ local debugHeartbeats = false
 local alertDurationSeconds = 0.6
 local reconciliationIntervalSeconds = 0.25
 local maxReconciliationAttempts = 24
+local requiredStableMatches = 2
 local serialPortPath = "/dev/cu.usbserial-0001"
 local serialBaudRate = 115200
 local maxAccessibilitySearchDepth = 24
@@ -20,6 +21,8 @@ local serialPort = nil
 local serialBuffer = ""
 local desiredMuteState = nil
 local reconciliationGeneration = 0
+local stableReconciliationMatches = 0
+local actionReconciliationGeneration = 0
 local serialReconnectGeneration = 0
 _G.muteButtonConfigGeneration = (_G.muteButtonConfigGeneration or 0) + 1
 local configGeneration = _G.muteButtonConfigGeneration
@@ -240,22 +243,27 @@ local function zoomAudioMenuTitle(zoom)
   return nil
 end
 
-local function handleZoomMicState(zoom, targetMuteState)
+local function handleZoomMicState(zoom, targetMuteState, actionAllowed)
   local title = zoomAudioMenuTitle(zoom)
   if not title then
     log("No Zoom mute/unmute audio menu item found")
-    return false
+    return "failed"
   end
 
   local currentZoomMicState = zoomMicStateFromMenuTitle(title)
   if muteStates[targetMuteState] and currentZoomMicState == targetMuteState then
     log("Zoom audio already matches LED state; no press needed; state=" .. targetMuteState .. " menu item=" .. title)
-    return true
+    return "matched"
   end
 
   if muteStates[targetMuteState] and not currentZoomMicState then
     log("Zoom audio menu item found, but state could not be inferred; menu item=" .. title)
-    return false
+    return "failed"
+  end
+
+  if not actionAllowed then
+    log("Zoom audio still appears out of sync after one action; not pressing again for this button state; target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentZoomMicState))
+    return "pending"
   end
 
   log("Pressing Zoom audio menu item: " .. title .. " target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentZoomMicState))
@@ -267,7 +275,10 @@ local function handleZoomMicState(zoom, targetMuteState)
     zoomLastPressAt = hs.timer.secondsSinceEpoch()
   end
   log("Zoom audio selectMenuItem result=" .. tostring(pressed))
-  return pressed
+  if pressed then
+    return "acted"
+  end
+  return "failed"
 end
 
 local function findMicButton(element, depth, seen)
@@ -310,92 +321,116 @@ local function findMicButton(element, depth, seen)
   return nil
 end
 
-local function handleTeamsMicState(teams, targetMuteState)
+local function handleTeamsMicState(teams, targetMuteState, actionAllowed)
   local appElement = hs.axuielement.applicationElement(teams)
   if not appElement then
     log("Could not get Teams accessibility root")
-    return false
+    return "failed"
   end
 
   local button, text = findMicButton(appElement, 0, {})
   if not button then
     log("No Teams mic/mute accessibility button found")
-    return false
+    return "failed"
   end
 
   local currentTeamsMicState = teamsMicStateFromButtonText(text)
   if muteStates[targetMuteState] and currentTeamsMicState == targetMuteState then
     log("Teams mic already matches LED state; no click needed; state=" .. targetMuteState .. " text=" .. text)
-    return true
+    return "matched"
   end
 
   if muteStates[targetMuteState] and not currentTeamsMicState then
     log("Teams mic button found, but state could not be inferred; text=" .. text)
-    return false
+    return "failed"
+  end
+
+  if not actionAllowed then
+    log("Teams mic still appears out of sync after one action; not pressing again for this button state; target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentTeamsMicState))
+    return "pending"
   end
 
   log("Mouse-clicking Teams mic button: " .. text .. " target state=" .. tostring(targetMuteState) .. " current state=" .. tostring(currentTeamsMicState))
   local clicked = clickElementCenter(button)
   log("Teams mic mouse click result=" .. tostring(clicked))
-  return clicked
+  if clicked then
+    return "acted"
+  end
+  return "failed"
 end
 
 local function handleZoomTarget(zoom, muteState, requestGeneration, showStatus)
   if not isLatestMeetingRequest(requestGeneration) then
-    return false
+    return "stale"
   end
 
   local settleRemaining = (zoomLastPressAt + zoomPostPressSettleSeconds) - hs.timer.secondsSinceEpoch()
   if settleRemaining > 0 then
     log("Zoom audio menu is settling; queued target state=" .. tostring(muteState) .. " wait=" .. string.format("%.2f", settleRemaining))
-    return false
+    return "pending"
   end
 
   if not isAppFrontmost(zoom) then
     log("Activating Zoom before mic update; target state=" .. tostring(muteState))
     zoom:activate(true)
-    return false
+    return "pending"
   end
 
-  if handleZoomMicState(zoom, muteState) then
+  local actionAllowed = actionReconciliationGeneration ~= requestGeneration
+  local micStatus = handleZoomMicState(zoom, muteState, actionAllowed)
+  if micStatus == "acted" then
+    actionReconciliationGeneration = requestGeneration
+  end
+
+  if micStatus == "matched" or micStatus == "acted" then
     log("Zoom mic state handled through accessibility")
     if showStatus then
       showAlert(alertForMuteState(muteState))
     end
-    return true
+    return micStatus
   end
 
-  log("Zoom is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-  if showStatus then
+  if micStatus == "failed" then
+    log("Zoom is frontmost; no safe mic action available; target state=" .. tostring(muteState))
+  end
+  if showStatus and micStatus == "failed" then
     showAlert(alertForUnavailableZoomMicControl(muteState))
   end
-  return false
+  return micStatus
 end
 
 local function handleTeamsTarget(teams, muteState, requestGeneration, showStatus)
   if not isLatestMeetingRequest(requestGeneration) then
-    return false
+    return "stale"
   end
 
   if not isAppFrontmost(teams) then
     log("Activating Teams before mic update; target state=" .. tostring(muteState))
     teams:activate(true)
-    return false
+    return "pending"
   end
 
-  if handleTeamsMicState(teams, muteState) then
+  local actionAllowed = actionReconciliationGeneration ~= requestGeneration
+  local micStatus = handleTeamsMicState(teams, muteState, actionAllowed)
+  if micStatus == "acted" then
+    actionReconciliationGeneration = requestGeneration
+  end
+
+  if micStatus == "matched" or micStatus == "acted" then
     log("Teams mic state handled through accessibility")
     if showStatus then
       showAlert(alertForMuteState(muteState))
     end
-    return true
+    return micStatus
   end
 
-  log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
-  if showStatus then
+  if micStatus == "failed" then
+    log("Teams is frontmost; no safe mic action available; target state=" .. tostring(muteState))
+  end
+  if showStatus and micStatus == "failed" then
     showAlert(alertForUnavailableTeamsMicControl(muteState))
   end
-  return false
+  return micStatus
 end
 
 -- Priority is intentionally pragmatic: Google Meet can fit here later by
@@ -438,18 +473,34 @@ runMeetingReconciliation = function(requestGeneration, attempt)
   end
 
   local target, app = findMeetingAppTarget()
+  local reconciliationResult = "pending"
   if not target then
+    stableReconciliationMatches = 0
     if attempt == 1 then
       showAlert("No supported meeting app is running")
     end
   else
     log("Reconciliation attempt=" .. tostring(attempt) .. " target=" .. target.name .. " desired LED state=" .. targetMuteState)
-    local reconciled = target.handle(app, targetMuteState, requestGeneration, attempt == 1)
-    log("Reconciliation attempted for desired LED state; result=" .. tostring(reconciled) .. "; continuing verification")
+    reconciliationResult = target.handle(app, targetMuteState, requestGeneration, attempt == 1)
+    log("Reconciliation attempted for desired LED state; status=" .. tostring(reconciliationResult))
+    if reconciliationResult == "matched" then
+      stableReconciliationMatches = stableReconciliationMatches + 1
+      log("Reconciliation stable match count=" .. tostring(stableReconciliationMatches) .. "/" .. tostring(requiredStableMatches))
+      if stableReconciliationMatches >= requiredStableMatches then
+        log("Reconciliation stable; desired LED state matches meeting app")
+        return
+      end
+    else
+      stableReconciliationMatches = 0
+    end
   end
 
   if attempt >= maxReconciliationAttempts then
     log("Reconciliation window ended for desired LED state=" .. tostring(desiredMuteState))
+    if reconciliationResult == "pending" and actionReconciliationGeneration == requestGeneration then
+      local state = stateFor(desiredMuteState)
+      showAlert(state.alert .. " (LED " .. state.ledColor .. "; not verified)")
+    end
     return
   end
 
@@ -464,6 +515,8 @@ local function requestMeetingReconciliation(muteState, reason)
 
   desiredMuteState = muteState
   reconciliationGeneration = reconciliationGeneration + 1
+  stableReconciliationMatches = 0
+  actionReconciliationGeneration = 0
   local requestGeneration = reconciliationGeneration
   log("Requested meeting reconciliation reason=" .. tostring(reason) .. " desired LED state=" .. muteState)
   runMeetingReconciliation(requestGeneration, 1)

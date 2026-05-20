@@ -56,7 +56,7 @@ def test_teams_mic_click_respects_led_target_state():
     assert "local function teamsMicStateFromButtonText(text)" in config
     assert 'return "muted"' in config
     assert 'return "unmuted"' in config
-    assert "handleTeamsMicState(teams, muteState)" in config
+    assert "handleTeamsMicState(teams, muteState, actionAllowed)" in config
     assert "currentTeamsMicState == targetMuteState" in config
     assert "Teams mic already matches LED state; no click needed; state=" in config
 
@@ -106,19 +106,36 @@ def test_hammerspoon_reconciles_latest_led_state_retroactively():
     assert "desiredMuteState = muteState" in config
     assert "runMeetingReconciliation(requestGeneration, 1)" in config
     assert "scheduleMeetingReconciliation(requestGeneration, attempt + 1, reconciliationIntervalSeconds)" in config
-    assert "Reconciliation attempted for desired LED state; result=" in config
+    assert "Reconciliation attempted for desired LED state; status=" in config
 
 
 def test_reconciliation_loop_is_single_flight_not_nested_timers():
     config = CONFIG.read_text()
 
-    assert "local reconciled = target.handle(app, targetMuteState, requestGeneration, attempt == 1)" in config
-    assert "return false" in config
-    assert "return true" in config
+    assert 'local reconciliationResult = "pending"' in config
+    assert "reconciliationResult = target.handle(app, targetMuteState, requestGeneration, attempt == 1)" in config
+    assert 'return "pending"' in config
+    assert 'return "acted"' in config
+    assert 'return "matched"' in config
+    assert "actionReconciliationGeneration ~= requestGeneration" in config
+    assert "not pressing again for this button state" in config
     assert "handleZoomWhenFrontmost" not in config
     assert "handleTeamsWhenFrontmost" not in config
     assert "meetingActivationDelaySeconds" not in config
     assert "hs.timer.doAfter(meetingActivationDelaySeconds" not in config
+
+
+def test_reconciliation_stops_after_stable_matches_to_avoid_toggle_loops():
+    config = CONFIG.read_text()
+
+    assert "local requiredStableMatches = 2" in config
+    assert "local stableReconciliationMatches = 0" in config
+    assert "stableReconciliationMatches = stableReconciliationMatches + 1" in config
+    assert "stableReconciliationMatches >= requiredStableMatches" in config
+    assert "Reconciliation stable; desired LED state matches meeting app" in config
+    assert "stableReconciliationMatches = 0" in config
+    assert "Reconciliation attempted for desired LED state; status=" in config
+    assert "continuing verification" not in config
 
 
 def test_zoom_queues_latest_state_while_audio_menu_settles():
