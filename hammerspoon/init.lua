@@ -7,9 +7,29 @@ local controllerIntervalSeconds = 0.20
 local commandSettleSeconds = 0.90
 local maxControllerAttempts = 30
 local requiredStableMatches = 2
-local serialPortPath = "/dev/cu.usbserial-0001"
+local muteButtonDeviceId = "61D60974-E863-4DB8-B571-2F3B0943FD3E"
+local muteButtonUsbSerialNumber = nil
+local excludedSerialDeviceFingerprints = {
+  {
+    reason = "laundry ESP32 currently attached on this USB location",
+    usbSerialNumber = "0001",
+    idVendor = 4292,
+    idProduct = 60000,
+    locationID = 18087936,
+    productName = "CP2102 USB to UART Bridge Controller",
+    deviceSignature = "c41060ea000130303031000000ff0000",
+  },
+}
+local serialAbsentRetrySeconds = 5
+local serialVerificationTimeoutSeconds = 2
 local serialBaudRate = 115200
 local maxAccessibilitySearchDepth = 24
+local finderBundleId = "com.apple.finder"
+local serialCandidatePathTemplates = {
+  "/dev/cu.usbserial-%s",
+  "/dev/cu.SLAB_USBtoUART%s",
+  "/dev/cu.wchusbserial%s",
+}
 local zoomBundleIds = {
   "us.zoom.xos",
 }
@@ -20,6 +40,10 @@ local teamsBundleIds = {
 
 local serialPort = nil
 local serialBuffer = ""
+local serialDeviceVerified = false
+local serialCandidateIndex = 1
+local serialVerificationTimer = nil
+local currentSerialPortPath = nil
 local desiredMuteState = nil
 local desiredStateVersion = 0
 local controllerAttempt = 0
@@ -73,6 +97,93 @@ if hs.ipc then
   log("IPC CLI installed")
 end
 
+local function isUserApplication(app)
+  return app and app:kind() == 1
+end
+
+local function applicationLabel(app)
+  if not app then
+    return "name=nil bundle=nil"
+  end
+  return "name=" .. tostring(app:name()) .. " bundle=" .. tostring(app:bundleID())
+end
+
+local function frontmostApplicationIsOnlyVisibleUserApp(frontmostApp)
+  if not isUserApplication(frontmostApp) then
+    return false
+  end
+
+  local frontmostBundleId = frontmostApp:bundleID()
+  for _, app in ipairs(hs.application.runningApplications()) do
+    if isUserApplication(app) and app:bundleID() ~= frontmostBundleId and not app:isHidden() then
+      return false
+    end
+  end
+  return true
+end
+
+local function activateFinderForHideEscapeHatch()
+  local finder = hs.application.get("com.apple.finder")
+  if not finder then
+    log("Finder app unavailable for hide escape hatch")
+    return false
+  end
+
+  finder:unhide()
+  finder:activate()
+  return true
+end
+
+local function hideFrontmostApplication()
+  local app = hs.application.frontmostApplication()
+  if not isUserApplication(app) then
+    log("No frontmost user application to hide")
+    return
+  end
+
+  if app:bundleID() ~= finderBundleId and frontmostApplicationIsOnlyVisibleUserApp(app) and activateFinderForHideEscapeHatch() then
+    log("Hiding frontmost application with Finder escape hatch " .. applicationLabel(app))
+    hs.timer.doAfter(0.05, function()
+      app:hide()
+    end)
+    return
+  end
+
+  log("Hiding frontmost application " .. applicationLabel(app))
+  app:hide()
+end
+
+local function hideOtherApplications()
+  local frontmostApp = hs.application.frontmostApplication()
+  local frontmostBundleId = frontmostApp and frontmostApp:bundleID()
+  local hiddenCount = 0
+
+  for _, app in ipairs(hs.application.runningApplications()) do
+    if isUserApplication(app) and app:bundleID() ~= frontmostBundleId and not app:isHidden() then
+      app:hide()
+      hiddenCount = hiddenCount + 1
+    end
+  end
+
+  log("Hiding other applications count=" .. tostring(hiddenCount) .. " frontmost " .. applicationLabel(frontmostApp))
+end
+
+local function showAllApplications()
+  local shownCount = 0
+  for _, app in ipairs(hs.application.runningApplications()) do
+    if isUserApplication(app) and app:isHidden() then
+      app:unhide()
+      shownCount = shownCount + 1
+    end
+  end
+
+  log("Showing all hidden applications count=" .. tostring(shownCount))
+end
+
+hs.hotkey.bind({ "cmd" }, "H", hideFrontmostApplication)
+hs.hotkey.bind({ "alt", "cmd" }, "H", hideOtherApplications)
+hs.hotkey.bind({ "alt", "cmd", "shift" }, "H", showAllApplications)
+
 local function closeSerialPortObject(port, reason)
   if not port then
     return
@@ -108,6 +219,11 @@ end
 if _G.muteButtonControllerTimer then
   stopTimerObject(_G.muteButtonControllerTimer, "config reload cleanup")
   _G.muteButtonControllerTimer = nil
+end
+
+if _G.muteButtonSerialVerificationTimer then
+  stopTimerObject(_G.muteButtonSerialVerificationTimer, "config reload cleanup")
+  _G.muteButtonSerialVerificationTimer = nil
 end
 
 local function findRunningApp(bundleIds, label)
@@ -359,8 +475,8 @@ end
 -- Priority is intentionally pragmatic: Google Meet can fit here later by
 -- detecting a browser tab before Teams, but Zoom wins today when it is open.
 local meetingAppTargets = {
-  { name = "Zoom", find = findZoom, read = readZoomMicState, apply = applyZoomMicState, unavailableAlert = alertForUnavailableZoomMicControl },
-  { name = "Teams", find = findTeams, read = readTeamsMicState, apply = applyTeamsMicState, unavailableAlert = alertForUnavailableTeamsMicControl },
+  { name = "Zoom", find = findZoom, read = readZoomMicState, apply = applyZoomMicState, maxCommandAttempts = 1, unavailableAlert = alertForUnavailableZoomMicControl },
+  { name = "Teams", find = findTeams, read = readTeamsMicState, apply = applyTeamsMicState, maxCommandAttempts = 2, unavailableAlert = alertForUnavailableTeamsMicControl },
 }
 
 local function findMeetingAppTarget()
@@ -418,10 +534,26 @@ local function meetingCommandSettleRemaining()
   return 0
 end
 
-local function alreadyCommandedCurrentState(targetMuteState)
+local function lastMeetingCommandMatches(targetName, targetMuteState)
   return lastMeetingCommand
     and lastMeetingCommand.version == desiredStateVersion
     and lastMeetingCommand.targetState == targetMuteState
+    and lastMeetingCommand.appName == targetName
+end
+
+local function currentMeetingCommandAttemptCount(targetName, targetMuteState)
+  if lastMeetingCommandMatches(targetName, targetMuteState) and type(lastMeetingCommand.commandCount) == "number" then
+    return lastMeetingCommand.commandCount
+  end
+  return 0
+end
+
+local function nextMeetingCommandAttemptCount(targetName, targetMuteState)
+  return currentMeetingCommandAttemptCount(targetName, targetMuteState) + 1
+end
+
+local function meetingCommandAttemptsExhausted(target, targetMuteState)
+  return currentMeetingCommandAttemptCount(target.name, targetMuteState) >= (target.maxCommandAttempts or 1)
 end
 
 local function retryMeetingController(delaySeconds, reason)
@@ -495,11 +627,16 @@ runMeetingController = function(reason)
   end
 
   stableReconciliationMatches = 0
-  if alreadyCommandedCurrentState(targetMuteState) then
+  if meetingCommandAttemptsExhausted(target, targetMuteState) then
     local state = stateFor(targetMuteState)
-    log("Meeting command already sent for desired LED state; not retrying without a new button press; desired LED state=" .. targetMuteState .. " observed state=" .. tostring(observation.state) .. " version=" .. tostring(desiredStateVersion))
+    log("Meeting command already sent for desired LED state; not retrying without a new button press; target=" .. target.name .. " desired LED state=" .. targetMuteState .. " observed state=" .. tostring(observation.state) .. " version=" .. tostring(desiredStateVersion) .. " command count=" .. tostring(currentMeetingCommandAttemptCount(target.name, targetMuteState)))
     showAlert(state.alert .. " (LED " .. state.ledColor .. "; app did not confirm)")
     return
+  end
+
+  local commandCount = nextMeetingCommandAttemptCount(target.name, targetMuteState)
+  if commandCount > 1 then
+    log("Meeting command already sent for desired LED state; retrying within target attempt budget; target=" .. target.name .. " desired LED state=" .. targetMuteState .. " observed state=" .. tostring(observation.state) .. " version=" .. tostring(desiredStateVersion) .. " command count=" .. tostring(commandCount) .. "/" .. tostring(target.maxCommandAttempts or 1))
   end
 
   local applied = target.apply(app, observation, targetMuteState)
@@ -515,6 +652,7 @@ runMeetingController = function(reason)
     targetState = targetMuteState,
     version = desiredStateVersion,
     sentAt = hs.timer.secondsSinceEpoch(),
+    commandCount = commandCount,
   }
   scheduleMeetingController(commandSettleSeconds, "command-settle")
 end
@@ -540,13 +678,202 @@ local function toggleMeetingMute(muteState)
 end
 
 _G.toggleMeetingMuteFromArduinoButton = toggleMeetingMute
-_G.toggleTeamsMuteFromArduinoButton = toggleMeetingMute
+
+local closeSerialPort
+local scheduleSerialOpen
+
+local function serialSuffixForPath(path)
+  return path:match("^/dev/cu%.usbserial%-([%w%-]+)$")
+      or path:match("^/dev/cu%.SLAB_USBtoUART([%w%-]*)$")
+      or path:match("^/dev/cu%.wchusbserial([%w%-]+)$")
+end
+
+local function ioregStringProperty(block, propertyName)
+  return block:match('"' .. propertyName .. '" = "([^"]*)"')
+end
+
+local function ioregNumberProperty(block, propertyName)
+  local value = block:match('"' .. propertyName .. '" = (%d+)')
+  return value and tonumber(value) or nil
+end
+
+local function ioregDataProperty(block, propertyName)
+  return block:match('"' .. propertyName .. '" = <([0-9a-fA-F]+)>')
+end
+
+local function ioregUsbDeviceBlocksForSerialNumber(usbSerialNumber)
+  if not usbSerialNumber or usbSerialNumber == "" then
+    return {}
+  end
+
+  local output = hs.execute("/usr/sbin/ioreg -p IOUSB -l -w 0", true) or ""
+  local blocks = {}
+  local inDevice = false
+  local current = {}
+  for line in output:gmatch("[^\r\n]+") do
+    if line:match("<class IOUSBHostDevice") then
+      inDevice = true
+      current = { line }
+    elseif inDevice then
+      table.insert(current, line)
+      if line:match("^[%s|]*}%s*$") then
+        local block = table.concat(current, "\n")
+        local serialNumber = ioregStringProperty(block, "USB Serial Number")
+            or ioregStringProperty(block, "kUSBSerialNumberString")
+        if serialNumber == usbSerialNumber then
+          table.insert(blocks, block)
+        end
+        inDevice = false
+        current = {}
+      end
+    end
+  end
+  return blocks
+end
+
+local function usbDeviceFingerprintMatches(block, fingerprint)
+  if fingerprint.usbSerialNumber then
+    local serialNumber = ioregStringProperty(block, "USB Serial Number")
+        or ioregStringProperty(block, "kUSBSerialNumberString")
+    if serialNumber ~= fingerprint.usbSerialNumber then
+      return false
+    end
+  end
+  if fingerprint.productName then
+    local productName = ioregStringProperty(block, "USB Product Name")
+        or ioregStringProperty(block, "kUSBProductString")
+    if productName ~= fingerprint.productName then
+      return false
+    end
+  end
+  if fingerprint.idVendor and ioregNumberProperty(block, "idVendor") ~= fingerprint.idVendor then
+    return false
+  end
+  if fingerprint.idProduct and ioregNumberProperty(block, "idProduct") ~= fingerprint.idProduct then
+    return false
+  end
+  if fingerprint.locationID and ioregNumberProperty(block, "locationID") ~= fingerprint.locationID then
+    return false
+  end
+  if fingerprint.deviceSignature then
+    local deviceSignature = ioregDataProperty(block, "UsbDeviceSignature")
+    if deviceSignature ~= fingerprint.deviceSignature then
+      return false
+    end
+  end
+  return true
+end
+
+local function serialCandidateExclusionReason(path)
+  local usbSerialNumber = serialSuffixForPath(path)
+  if not usbSerialNumber then
+    return nil
+  end
+
+  for _, block in ipairs(ioregUsbDeviceBlocksForSerialNumber(usbSerialNumber)) do
+    for _, fingerprint in ipairs(excludedSerialDeviceFingerprints) do
+      if usbDeviceFingerprintMatches(block, fingerprint) then
+        return fingerprint.reason
+      end
+    end
+  end
+  return nil
+end
+
+local function discoverSerialCandidatePaths()
+  local paths = {}
+  if not muteButtonUsbSerialNumber or muteButtonUsbSerialNumber == "" then
+    log("Mute button USB serial number is not configured")
+    return paths
+  end
+
+  for _, template in ipairs(serialCandidatePathTemplates) do
+    local path = string.format(template, muteButtonUsbSerialNumber)
+    local exclusionReason = serialCandidateExclusionReason(path)
+    if exclusionReason then
+      log("Skipping excluded serial candidate path=" .. path .. " reason=" .. exclusionReason)
+    elseif hs.fs.attributes(path) then
+      table.insert(paths, path)
+    end
+  end
+  table.sort(paths)
+  return paths
+end
+
+local function nextSerialCandidatePath()
+  local paths = discoverSerialCandidatePaths()
+  if #paths == 0 then
+    return nil, 0
+  end
+
+  if serialCandidateIndex > #paths then
+    serialCandidateIndex = 1
+  end
+
+  local path = paths[serialCandidateIndex]
+  serialCandidateIndex = (serialCandidateIndex % #paths) + 1
+  return path, #paths
+end
+
+local function stopSerialVerificationTimer(reason)
+  stopTimerObject(serialVerificationTimer, reason)
+  if _G.muteButtonSerialVerificationTimer == serialVerificationTimer then
+    _G.muteButtonSerialVerificationTimer = nil
+  end
+  serialVerificationTimer = nil
+end
+
+local function startSerialVerificationTimer()
+  stopSerialVerificationTimer("reschedule serial verification")
+  serialVerificationTimer = hs.timer.doAfter(serialVerificationTimeoutSeconds, function()
+    serialVerificationTimer = nil
+    if _G.muteButtonSerialVerificationTimer then
+      _G.muteButtonSerialVerificationTimer = nil
+    end
+    if configGeneration ~= _G.muteButtonConfigGeneration then
+      return
+    end
+    if not serialDeviceVerified then
+      log("Serial verification timed out path=" .. tostring(currentSerialPortPath))
+      closeSerialPort("verification timeout")
+      scheduleSerialOpen(1, "verification timeout")
+    end
+  end)
+  _G.muteButtonSerialVerificationTimer = serialVerificationTimer
+end
+
+local function verifySerialDeviceId(line)
+  local observedDeviceId = line:match("^device%-id=([%w%-]+)")
+  if not observedDeviceId then
+    return false
+  end
+
+  if observedDeviceId ~= muteButtonDeviceId then
+    log("Serial device id mismatch expected=" .. muteButtonDeviceId .. " observed=" .. tostring(observedDeviceId) .. " path=" .. tostring(currentSerialPortPath))
+    closeSerialPort("device id mismatch")
+    scheduleSerialOpen(1, "device id mismatch")
+    return true
+  end
+
+  serialDeviceVerified = true
+  stopSerialVerificationTimer("device id verified")
+  log("Verified mute button device id=" .. observedDeviceId .. " path=" .. tostring(currentSerialPortPath))
+  showAlert("Arduino mute button connected")
+  return true
+end
 
 local function handleSerialLine(line)
   if not debugHeartbeats and line:match("^heartbeat ") then
     return
   end
   log("Serial line: " .. line)
+  if verifySerialDeviceId(line) then
+    return
+  end
+  if not serialDeviceVerified then
+    log("Ignored serial line before verified mute button device id")
+    return
+  end
   if line:match("^pressed%-toggle") then
     toggleMeetingMute(line:match("state=(%w+)"))
   end
@@ -564,17 +891,24 @@ local function handleSerialData(data)
   end
 end
 
-local function closeSerialPort(reason)
+closeSerialPort = function(reason)
   if not serialPort then
+    serialDeviceVerified = false
+    currentSerialPortPath = nil
+    serialBuffer = ""
+    stopSerialVerificationTimer(reason)
     return
   end
 
+  stopSerialVerificationTimer(reason)
   closeSerialPortObject(serialPort, reason)
   if _G.muteButtonSerialPort == serialPort then
     _G.muteButtonSerialPort = nil
   end
   serialPort = nil
   serialBuffer = ""
+  serialDeviceVerified = false
+  currentSerialPortPath = nil
 end
 
 hs.shutdownCallback = function()
@@ -584,9 +918,10 @@ end
 
 local openSerialPort
 
-local function scheduleSerialOpen(delaySeconds)
+scheduleSerialOpen = function(delaySeconds, reason)
   serialReconnectGeneration = serialReconnectGeneration + 1
   local generation = serialReconnectGeneration
+  log("Scheduling serial open reason=" .. tostring(reason) .. " delay=" .. string.format("%.2f", delaySeconds) .. " generation=" .. tostring(generation))
   hs.timer.doAfter(delaySeconds, function()
     if generation == serialReconnectGeneration and configGeneration == _G.muteButtonConfigGeneration then
       openSerialPort()
@@ -598,20 +933,30 @@ end
 
 openSerialPort = function()
   if serialPort and serialPort:isOpen() then
-    log("Serial port already open: " .. serialPortPath)
+    log("Serial port already open: " .. tostring(currentSerialPortPath))
     return
   end
 
   closeSerialPort("pre-open cleanup")
 
-  log("Opening serial port: " .. serialPortPath)
-  serialPort = hs.serial.newFromPath(serialPortPath)
-  if not serialPort then
-    log("Arduino serial port not found")
-    showAlert("Arduino serial port not found")
+  local candidatePath, candidateCount = nextSerialCandidatePath()
+  if not candidatePath then
+    log("No mute button serial candidates found")
+    scheduleSerialOpen(serialAbsentRetrySeconds, "no serial candidates")
     return
   end
 
+  currentSerialPortPath = candidatePath
+  log("Opening serial candidate path=" .. currentSerialPortPath .. " candidate count=" .. tostring(candidateCount))
+  serialPort = hs.serial.newFromPath(currentSerialPortPath)
+  if not serialPort then
+    log("Could not create serial candidate path=" .. tostring(currentSerialPortPath))
+    currentSerialPortPath = nil
+    scheduleSerialOpen(1, "candidate unavailable")
+    return
+  end
+
+  serialDeviceVerified = false
   _G.muteButtonSerialPort = serialPort
   serialPort:baudRate(serialBaudRate)
   serialPort:dtr(false)
@@ -626,33 +971,33 @@ openSerialPort = function()
     elseif callbackType == "removed" or callbackType == "closed" then
       log("Serial callback: " .. tostring(callbackType))
       closeSerialPort(callbackType)
-      scheduleSerialOpen(1)
+      scheduleSerialOpen(1, callbackType)
       showAlert("Arduino serial disconnected")
     elseif callbackType == "error" then
       log("Serial callback: " .. tostring(callbackType))
       log("Arduino serial error: " .. tostring(message))
       closeSerialPort("error")
-      scheduleSerialOpen(1)
+      scheduleSerialOpen(1, "serial error")
       showAlert("Arduino serial error: " .. tostring(message))
     end
   end)
 
   if serialPort:open() then
-    log("Arduino serial connected")
-    showAlert("Arduino mute button connected")
+    log("Arduino serial candidate connected path=" .. tostring(currentSerialPortPath) .. "; waiting for device id")
+    startSerialVerificationTimer()
   else
-    log("Could not open Arduino serial port")
+    log("Could not open serial candidate path=" .. tostring(currentSerialPortPath))
     closeSerialPort("open failed")
-    showAlert("Could not open Arduino serial port")
+    scheduleSerialOpen(1, "open failed")
   end
 end
 
 hs.serial.deviceCallback(function()
   log("Serial device list changed")
   closeSerialPort("device list changed")
-  scheduleSerialOpen(1)
+  scheduleSerialOpen(1, "device list changed")
 end)
 
-scheduleSerialOpen(1)
+scheduleSerialOpen(1, "initial load")
 showAlert("Mute button config loaded")
 log("Mute button config loaded")

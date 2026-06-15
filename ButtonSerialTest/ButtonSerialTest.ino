@@ -7,6 +7,7 @@ const uint8_t LED_PIN = 2;
 const uint8_t LED_PIN = LED_BUILTIN;
 #endif
 const unsigned long DEBOUNCE_MS = 15;
+const char *MUTE_BUTTON_DEVICE_ID = "61D60974-E863-4DB8-B571-2F3B0943FD3E";
 
 enum MuteState {
   MUTED,
@@ -84,6 +85,8 @@ void setup() {
   lastRawReading = stableReading;
 
   Serial.println();
+  Serial.print("device-id=");
+  Serial.println(MUTE_BUTTON_DEVICE_ID);
   Serial.println("ButtonSerialTest ready");
   Serial.println("Wiring: GND -> one side of switch, GPIO0/P0 -> other side");
   Serial.println("Using INPUT_PULLUP: released=HIGH, pressed=LOW");

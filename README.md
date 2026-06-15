@@ -38,13 +38,16 @@ Compile and upload:
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32 ButtonSerialTest
-arduino-cli upload -p /dev/cu.usbserial-0001 --fqbn esp32:esp32:esp32 ButtonSerialTest
+ls /dev/cu.usbserial-* /dev/cu.SLAB_USBtoUART* /dev/cu.wchusbserial* 2>/dev/null
+PORT=/dev/cu.usbserial-0001
+arduino-cli upload -p "$PORT" --fqbn esp32:esp32:esp32 ButtonSerialTest
 ```
 
 Serial monitor:
 
 ```bash
-arduino-cli monitor -p /dev/cu.usbserial-0001 --config baudrate=115200,dtr=off,rts=off --timestamp
+PORT=/dev/cu.usbserial-0001
+arduino-cli monitor -p "$PORT" --config baudrate=115200,dtr=off,rts=off --timestamp
 ```
 
 ## Hammerspoon
@@ -57,7 +60,20 @@ The installed `~/.hammerspoon/init.lua` should load the repo config:
 dofile("/Users/rob/repos/mute-button/hammerspoon/init.lua")
 ```
 
-Hammerspoon listens to `/dev/cu.usbserial-0001`, watches for `pressed-toggle`, then picks the first running meeting app in priority order:
+The config also owns macOS app-hide hotkeys directly through Hammerspoon:
+
+- `Command-H`: hide the frontmost app.
+- `Option-Command-H`: hide all other apps.
+- `Shift-Option-Command-H`: show all hidden apps.
+
+If the frontmost app is the only visible user app, `Command-H` activates Finder first and then hides the app. That keeps the shortcut useful when macOS would otherwise be reluctant to hide the last visible app.
+
+Hammerspoon checks only configured USB serial-style callout paths, waits for the firmware to announce `device-id=61D60974-E863-4DB8-B571-2F3B0943FD3E`, and ignores all serial input until that ID is verified. This prevents another plugged-in ESP32 from driving meeting mute state. If the mute button is not connected, Hammerspoon logs the missing candidate state and retries quietly instead of alerting repeatedly.
+Set `muteButtonUsbSerialNumber` in `hammerspoon/init.lua` before enabling serial control. Leave it `nil` while the mute button is unplugged or while another ESP32 is connected; Hammerspoon will not open arbitrary USB serial devices.
+
+The laundry ESP32 currently appears as `/dev/cu.usbserial-0001`, which is a generic CP2102 path and can collide with this project when only one CP2102 board is attached. Hammerspoon excludes the currently attached laundry board by USB registry fingerprint, not by callout path alone. That fingerprint includes USB serial, vendor ID, product ID, USB location, product name, and `UsbDeviceSignature`, so another mute-button board can still use the same path name later if its fingerprint differs. Remove that fingerprint exclusion only when you intentionally flash/use this ESP32 as the mute button again.
+
+Once the mute button is verified, Hammerspoon watches for `pressed-toggle`, then picks the first running meeting app in priority order:
 
 1. Zoom
 2. Microsoft Teams
@@ -83,9 +99,9 @@ Responsiveness knobs:
 - Rapid presses are coalesced for `0.20s` before Hammerspoon touches Zoom or Teams, so a quick double tap usually becomes one final desired state instead of two app commands.
 - After any app mute command, Hammerspoon waits `0.90s` before trusting the app's reported mic state. This avoids being fooled by Zoom's briefly stale menu state.
 - The controller observes the app state twice before declaring it stable, and sends a new command only if the settled app state still disagrees with the LED.
-- For safety, Hammerspoon sends at most one app command for each LED-state version. If Zoom or Teams does not confirm that command, Hammerspoon shows an `app did not confirm` alert instead of repeating the command.
+- For safety, Hammerspoon bounds app commands for each LED-state version. Zoom stays one-shot because its menu state can briefly be stale; Teams gets one extra click attempt because its WebView sometimes reports a mouse click without changing mic state. If the app still does not confirm, Hammerspoon shows an `app did not confirm` alert.
 - Status alerts replace the previous alert and last `0.6s`, so the toast should never feel like a cooldown.
-- Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged.
+- Hammerspoon closes stale serial objects and reconnects when the ESP32 is unplugged/replugged or is not present yet during Hammerspoon startup.
 - Firmware avoids heartbeat spam during normal operation.
 
 Debug log:
